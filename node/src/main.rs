@@ -259,7 +259,7 @@ async fn run_faucet(to: String, amount: String) -> Result<(), Box<dyn std::error
     } else {
         U256::from(amount.parse::<u128>().map_err(|_| "invalid amount")?)
     };
-    let to_hex = if to.starts_with("0x") { to } else { format!("0x{}", to) };
+    let to_hex = if to.starts_with("0x") { to.clone() } else { format!("0x{}", to) };
     let to_addr = quyn_wallet::address_from_str(&to_hex)?;
     let tx = Transaction {
         nonce,
