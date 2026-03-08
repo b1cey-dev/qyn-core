@@ -352,7 +352,7 @@ async fn run_faucet(to: String, amount: String) -> Result<(), Box<dyn std::error
     let nonce_res: serde_json::Value = client.post(&url).json(&nonce_body).send().await?.json().await?;
     let nonce_hex = nonce_res.get("result").and_then(|r| r.as_str()).unwrap_or("0x0");
     let nonce = u64::from_str_radix(nonce_hex.trim_start_matches("0x"), 16).unwrap_or(0);
-    let value_wei: U256 = if amount.trim_start_matches("0x").chars().all(|c| c.is_ascii_hexdigit()) {
+    let value_wei: U256 = if amount.starts_with("0x") {
         U256::from_str_radix(amount.trim_start_matches("0x"), 16).map_err(|_| "invalid hex amount")?
     } else {
         U256::from(amount.parse::<u128>().map_err(|_| "invalid amount")?)
@@ -369,7 +369,7 @@ async fn run_faucet(to: String, amount: String) -> Result<(), Box<dyn std::error
         chain_id,
     };
     let signed = sign_transaction(&tx, &kp)?;
-    let raw = bincode::serialize(&signed).map_err(|e| e.to_string())?;
+    let raw = signed.to_legacy_rlp();
     let raw_hex = format!("0x{}", hex::encode(&raw));
     let send_body = serde_json::json!({
         "jsonrpc": "2.0",

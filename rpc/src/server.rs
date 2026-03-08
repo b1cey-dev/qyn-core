@@ -254,13 +254,16 @@ fn parse_legacy_tx(raw_bytes: &[u8]) -> Result<quyn_core::SignedTransaction, Str
 /// raw_bytes: full payload including 0x02 prefix, used for tx hash.
 fn parse_eip1559_tx(raw_bytes: &[u8]) -> Result<quyn_core::SignedTransaction, String> {
     let bytes = if raw_bytes.first() == Some(&0x02) { &raw_bytes[1..] } else { raw_bytes };
+    if bytes.len() < 2 {
+        return Err("EIP-1559 payload too short".into());
+    }
     let rlp = Rlp::new(bytes);
     if !rlp.is_list() {
-        return Err("expected RLP list".into());
+        return Err("EIP-1559 expected RLP list".into());
     }
-    let item_count = rlp.item_count().map_err(|e| e.to_string())?;
-    if item_count < 12 {
-        return Err(format!("EIP-1559 tx expects 12 fields, got {}", item_count));
+    let item_count = rlp.item_count().map_err(|e| format!("EIP-1559 item_count: {}", e))?;
+    if item_count < 11 {
+        return Err(format!("EIP-1559 tx expects 11-12 fields, got {} (payload len={}, first_bytes={:?})", item_count, bytes.len(), &bytes[..bytes.len().min(4)]));
     }
     let chain_id: u64 = rlp.val_at(0).map_err(|e| e.to_string())?;
     let nonce: u64 = rlp.val_at(1).map_err(|e| e.to_string())?;

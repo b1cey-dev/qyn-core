@@ -134,6 +134,24 @@ impl SignedTransaction {
     pub fn data(&self) -> &[u8] {
         &self.transaction.data
     }
+
+    /// Encode as legacy EIP-155 RLP for eth_sendRawTransaction. Use this for faucet/cast compatibility.
+    pub fn to_legacy_rlp(&self) -> Vec<u8> {
+        let t = &self.transaction;
+        let v_eip155: u64 = 35 + 2 * t.chain_id + (if self.v >= 27 { self.v - 27 } else { self.v } as u64);
+        let mut stream = RlpStream::new_list(9);
+        stream.append(&t.nonce);
+        stream.append(&u256_to_rlp_bytes(&t.gas_price).as_slice());
+        stream.append(&t.gas_limit);
+        let to_bytes: &[u8] = t.to.as_ref().map(|a| a.as_slice()).unwrap_or(&[]);
+        stream.append(&to_bytes);
+        stream.append(&u256_to_rlp_bytes(&t.value).as_slice());
+        stream.append(&t.data.as_slice());
+        stream.append(&v_eip155);
+        stream.append(&self.r.as_slice());
+        stream.append(&self.s.as_slice());
+        stream.out().to_vec()
+    }
 }
 
 #[cfg(test)]

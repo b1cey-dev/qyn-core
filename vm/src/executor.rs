@@ -1,10 +1,10 @@
 //! QVM executor: wrap revm for transaction and contract execution.
 
 use crate::error::VmError;
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{keccak256, Address, B256, U256};
 use quyn_core::SignedTransaction;
 use revm::db::{Database, DatabaseCommit};
-use revm::primitives::{BlockEnv, CfgEnv, Env, EnvWithHandlerCfg, HandlerCfg, SpecId, TxEnv};
+use revm::primitives::{BlobExcessGasAndPrice, BlockEnv, CfgEnv, Env, EnvWithHandlerCfg, HandlerCfg, SpecId, TxEnv};
 
 /// Chain ID for Quyn mainnet (used in EVM when chain_id not passed).
 pub const QYN_CHAIN_ID: u64 = 7777;
@@ -174,8 +174,8 @@ pub fn block_env(
         basefee: to_revm_u256(base_fee),
         coinbase,
         difficulty: to_revm_u256(U256::ZERO),
-        prevrandao: None,
-        blob_excess_gas_and_price: None,
+        prevrandao: Some(B256::from(keccak256(number.to_be_bytes()))),
+        blob_excess_gas_and_price: Some(BlobExcessGasAndPrice::new(0)),
     }
 }
 
