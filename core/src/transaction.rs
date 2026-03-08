@@ -1,12 +1,20 @@
 //! Transaction structure and signing for Quyn.
 //!
-//! EIP-155 style: chain_id in signature to prevent replay across chains.
+//! EIP-155: chain_id in RLP signing payload and in v for replay protection.
+//! Transaction hash is Keccak256(RLP(signed_tx)) for Ethereum compatibility.
 
 use crate::error::CoreError;
 use alloy_primitives::{keccak256, Address, B256, U256};
+use rlp::RlpStream;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use secp256k1::ecdsa::RecoveryId;
+
+/// Minimal big-endian bytes for RLP (no leading zeros).
+fn u256_to_rlp_bytes(u: &U256) -> Vec<u8> {
+    let b = u.to_be_bytes::<32>();
+    let start = b.iter().position(|&x| x != 0).unwrap_or(32);
+    b[start..].to_vec()
+}
 
 /// Unsigned transaction (payload to sign).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,21 +30,20 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    /// Encode for signing (EIP-155: RLP of [nonce, gas_price, gas_limit, to, value, data, chain_id, 0, 0]).
+    /// Encode for signing (EIP-155: RLP of [nonce, gas_price, gas_limit, to, value, data, chain_id, 0, 0]), then Keccak256.
     pub fn signing_hash(&self) -> B256 {
-        let mut hasher = Sha256::new();
-        hasher.update(self.nonce.to_be_bytes());
-        hasher.update(self.gas_price.to_be_bytes::<32>().as_slice());
-        hasher.update(self.gas_limit.to_be_bytes());
-        if let Some(to) = &self.to {
-            hasher.update(to.as_slice());
-        } else {
-            hasher.update([0u8; 20]);
-        }
-        hasher.update(self.value.to_be_bytes::<32>().as_slice());
-        hasher.update(self.data.as_slice());
-        hasher.update(self.chain_id.to_be_bytes());
-        B256::from_slice(&hasher.finalize()[..])
+        let mut stream = RlpStream::new_list(9);
+        stream.append(&self.nonce);
+        stream.append(&u256_to_rlp_bytes(&self.gas_price).as_slice());
+        stream.append(&self.gas_limit);
+        let to_bytes: &[u8] = self.to.as_ref().map(|a| a.as_slice()).unwrap_or(&[]);
+        stream.append(&to_bytes);
+        stream.append(&u256_to_rlp_bytes(&self.value).as_slice());
+        stream.append(&self.data.as_slice());
+        stream.append(&self.chain_id);
+        stream.append_empty_data();
+        stream.append_empty_data();
+        keccak256(stream.out().as_ref())
     }
 
     /// Recover sender address from signature (Ethereum style: Keccak256 of pubkey, last 20 bytes).
@@ -65,13 +72,21 @@ pub struct SignedTransaction {
 }
 
 impl SignedTransaction {
+    /// Transaction hash: Keccak256(RLP([nonce, gas_price, gas_limit, to, value, data, v, r, s])) for Ethereum compatibility.
     pub fn hash(&self) -> B256 {
-        let mut hasher = Sha256::new();
-        hasher.update(self.transaction.signing_hash().as_slice());
-        hasher.update(&self.r);
-        hasher.update(&self.s);
-        hasher.update([self.v]);
-        B256::from_slice(&hasher.finalize()[..])
+        let mut stream = RlpStream::new_list(9);
+        let t = &self.transaction;
+        stream.append(&t.nonce);
+        stream.append(&u256_to_rlp_bytes(&t.gas_price).as_slice());
+        stream.append(&t.gas_limit);
+        let to_bytes: &[u8] = t.to.as_ref().map(|a| a.as_slice()).unwrap_or(&[]);
+        stream.append(&to_bytes);
+        stream.append(&u256_to_rlp_bytes(&t.value).as_slice());
+        stream.append(&t.data.as_slice());
+        stream.append(&self.v);
+        stream.append(&self.r.as_slice());
+        stream.append(&self.s.as_slice());
+        keccak256(stream.out().as_ref())
     }
 
     /// Recover sender address.

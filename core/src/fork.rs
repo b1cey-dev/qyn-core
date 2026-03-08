@@ -1,14 +1,49 @@
-//! Fork resolution: choose canonical chain by stake weight (or length for MVP).
+//! Fork resolution: GHOST stake-weighted fork choice and checkpoint finality.
 
 use crate::chain::ChainDB;
 use crate::error::CoreError;
+use crate::state::StateDB;
 use alloy_primitives::B256;
 use std::collections::HashMap;
 
-/// Fork choice: we use longest chain (by block number) as canonical.
-/// When consensus provides stake weights, this can be extended to weight-by-stake.
-pub fn canonical_head(chain: &ChainDB) -> Result<Option<B256>, CoreError> {
-    chain.get_head()
+/// Re-export for callers that need the constant.
+pub use crate::chain::FINALITY_DEPTH;
+
+/// Fork choice: GHOST (Greediest Heaviest Observed SubTree). Weight each block by the
+/// validator's stake (balance in state); choose the child with heaviest subtree at each step.
+pub fn canonical_head(chain: &ChainDB, state: &StateDB) -> Result<Option<B256>, CoreError> {
+    let genesis = match chain.get_block_by_number(0)? {
+        Some(b) => b.hash(),
+        None => return chain.get_head(),
+    };
+    // Walk from genesis: at each step pick the child with heaviest subtree (GHOST).
+    let mut current = genesis;
+    loop {
+        let children = chain.get_children(&current)?;
+        if children.is_empty() {
+            return Ok(Some(current));
+        }
+        let best = children
+            .into_iter()
+            .max_by_key(|h| subtree_stake(chain, state, h).unwrap_or(0))
+            .unwrap_or(current);
+        current = best;
+    }
+}
+
+/// Total stake (validator balance) in the subtree rooted at this block (for GHOST).
+fn subtree_stake(chain: &ChainDB, state: &StateDB, block_hash: &B256) -> Result<u128, CoreError> {
+    let block = match chain.get_block(block_hash)? {
+        Some(b) => b,
+        None => return Ok(0),
+    };
+    let validator_stake = state.get_balance(&block.header.validator)?.to::<u128>();
+    let children = chain.get_children(block_hash)?;
+    let child_stake: u128 = children
+        .iter()
+        .map(|h| subtree_stake(chain, state, h))
+        .try_fold(0u128, |acc, r| r.map(|s| acc.saturating_add(s)))?;
+    Ok(validator_stake.saturating_add(child_stake))
 }
 
 /// Find common ancestor of two block hashes.

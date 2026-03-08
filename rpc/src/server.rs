@@ -1,22 +1,36 @@
 //! JSON-RPC and REST server.
 
+use axum::extract::ConnectInfo;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
+use std::net::SocketAddr;
 use quyn_core::{
     ChainDB, Mempool, StateDB,
     validation::{validate_tx_basic, validate_tx_against_state},
 };
 use alloy_primitives::{Address, B256};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
+use tower_http::timeout::TimeoutLayer;
 
 pub type SharedChain = Arc<ChainDB>;
 pub type SharedState = Arc<StateDB>;
 pub type SharedMempool = Arc<Mempool>;
+
+/// Max RPC requests per IP per second.
+const RATE_LIMIT_PER_SEC: u32 = 100;
+/// Max request body size (1MB).
+const MAX_BODY_BYTES: usize = 1024 * 1024;
+/// Request timeout.
+const REQUEST_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -24,9 +38,11 @@ pub struct AppState {
     pub state: SharedState,
     pub mempool: SharedMempool,
     pub chain_id: u64,
+    pub rate_limiter: Arc<tokio::sync::RwLock<HashMap<String, (u32, Instant)>>>,
 }
 
 /// Serve RPC and REST until shutdown. Pass chain_id so devnet can use 7778 and mainnet 7777.
+/// In production (env QYN_PRODUCTION=1), CORS is restricted to getquyn.com and testnet.getquyn.com.
 pub async fn serve(
     chain: SharedChain,
     state: SharedState,
@@ -34,21 +50,45 @@ pub async fn serve(
     chain_id: u64,
     addr: String,
 ) -> Result<(), crate::error::RpcError> {
-    let app_state = AppState { chain, state, mempool, chain_id };
+    let rate_limiter = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+    let app_state = AppState {
+        chain,
+        state,
+        mempool,
+        chain_id,
+        rate_limiter,
+    };
+
+    let cors = if std::env::var("QYN_PRODUCTION").map(|v| v == "1").unwrap_or(false) {
+        CorsLayer::new()
+            .allow_origin(["https://getquyn.com".parse().unwrap(), "https://testnet.getquyn.com".parse().unwrap()])
+            .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+    } else {
+        CorsLayer::permissive()
+    };
+
     let app = Router::new()
         .route("/", get(health).post(jsonrpc_handler))
         .route("/rpc", get(rpc_chain_id_get).post(jsonrpc_handler))
         .route("/health", get(health))
-        .layer(CorsLayer::permissive())
+        .layer(
+            ServiceBuilder::new()
+                .layer(TimeoutLayer::new(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
+                .layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
+        .layer(cors)
         .with_state(app_state);
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| crate::error::RpcError::Internal(e.to_string()))?;
-    tracing::info!("RPC listening on {}", addr);
-    axum::serve(listener, app)
-        .await
-        .map_err(|e| crate::error::RpcError::Internal(e.to_string()))?;
+    tracing::info!("RPC listening on {} (body limit {} bytes, timeout {}s)", addr, MAX_BODY_BYTES, REQUEST_TIMEOUT_SECS);
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .map_err(|e| crate::error::RpcError::Internal(e.to_string()))?;
     Ok(())
 }
 
@@ -70,9 +110,32 @@ async fn rpc_chain_id_get(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 async fn jsonrpc_handler(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
+    let ip = peer.ip().to_string();
+    {
+        let now = Instant::now();
+        let mut limiter = state.rate_limiter.write().await;
+        let (count, window_start) = limiter.entry(ip.clone()).or_insert((0, now));
+        if now.duration_since(*window_start) >= Duration::from_secs(1) {
+            *count = 0;
+            *window_start = now;
+        }
+        *count += 1;
+        if *count > RATE_LIMIT_PER_SEC {
+            tracing::warn!("Rate limit exceeded for suspicious IP: {} ({} req/s)", ip, *count);
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": body.get("id"),
+                    "error": {"code": -32005, "message": "rate limit exceeded"}
+                })),
+            );
+        }
+    }
     let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
     let params = body.get("params").cloned().unwrap_or(Value::Array(vec![]));
     let id = body.get("id").cloned();
@@ -89,6 +152,30 @@ fn param_str(params: &Value, i: usize) -> Option<&str> {
     params.get(i).and_then(|p| p.as_str())
 }
 
+fn require_params_array(params: &Value) -> Result<&Vec<Value>, Value> {
+    params.as_array().ok_or_else(|| error_value("params must be an array"))
+}
+
+fn require_param_count(params: &Value, min_len: usize) -> Result<(), Value> {
+    let arr = require_params_array(params)?;
+    if arr.len() < min_len {
+        return Err(error_value(format!(
+            "method requires at least {} parameter(s), got {}",
+            min_len,
+            arr.len()
+        )));
+    }
+    Ok(())
+}
+
+fn require_param_string(params: &Value, i: usize) -> Result<(), Value> {
+    require_param_count(params, i + 1)?;
+    if params.get(i).and_then(|p| p.as_str()).is_none() {
+        return Err(error_value(format!("parameter {} must be a string", i)));
+    }
+    Ok(())
+}
+
 async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
     match method {
         "eth_blockNumber" => {
@@ -103,6 +190,9 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
         "net_version" => Value::String(state.chain_id.to_string()),
         "quyn_health" => Value::String("ok".to_string()),
         "eth_getBalance" => {
+            if let Err(e) = require_param_string(&params, 0) {
+                return e;
+            }
             let addr_hex = param_str(&params, 0).unwrap_or("");
             let addr = match parse_address(addr_hex) {
                 Ok(a) => a,
@@ -114,6 +204,9 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
             }
         }
         "eth_getTransactionCount" => {
+            if let Err(e) = require_param_string(&params, 0) {
+                return e;
+            }
             let addr_hex = param_str(&params, 0).unwrap_or("");
             let addr = match parse_address(addr_hex) {
                 Ok(a) => a,
@@ -125,6 +218,9 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
             }
         }
         "eth_sendRawTransaction" => {
+            if let Err(e) = require_param_string(&params, 0) {
+                return e;
+            }
             let hex_raw = param_str(&params, 0).unwrap_or("");
             let bytes = match hex::decode(hex_raw.trim_start_matches("0x")) {
                 Ok(b) => b,
@@ -147,6 +243,9 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
             }
         }
         "eth_getBlockByNumber" => {
+            if let Err(e) = require_param_count(&params, 1) {
+                return e;
+            }
             let tag = param_str(&params, 0).unwrap_or("latest");
             let full_tx = params.get(1).and_then(|p| p.as_bool()).unwrap_or(false);
             let block_number = if tag == "latest" || tag == "pending" {
@@ -168,7 +267,7 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
             let txs_value = if full_tx {
                 Value::Array(
                     block.body.transactions.iter()
-                        .map(|tx| tx_to_json(tx))
+                        .map(tx_to_json)
                         .collect()
                 )
             } else {
@@ -203,6 +302,9 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
             }
         }
         "eth_getTransactionReceipt" => {
+            if let Err(e) = require_param_string(&params, 0) {
+                return e;
+            }
             let hash_hex = param_str(&params, 0).unwrap_or("");
             let tx_hash = match parse_tx_hash(hash_hex) {
                 Ok(h) => h,

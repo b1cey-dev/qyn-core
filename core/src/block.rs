@@ -108,6 +108,7 @@ impl Block {
     }
 
     /// Create a block (for block production).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         parent_hash: B256,
         number: u64,

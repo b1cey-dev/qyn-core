@@ -8,7 +8,7 @@ pub mod signing;
 
 pub use cli::{run_new, run_sign_tx};
 pub use error::WalletError;
-pub use hd::{derive_keypair, generate_mnemonic};
+pub use hd::{derive_keypair, derive_keypair_for_chain, derivation_path_prefix, generate_mnemonic};
 pub use keys::{address_from_str, KeyPair};
 pub use signing::sign_transaction;
 

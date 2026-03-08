@@ -6,8 +6,9 @@ use bip32::XPrv;
 use bip39::Mnemonic;
 use rand::RngCore;
 
-/// Quyn derivation path: m/44'/7777'/0'/0/index
-const DERIVATION_PATH_PREFIX: &str = "m/44'/7777'/0'/0/";
+/// Quyn derivation path: m/44'/7777'/0'/0/index (mainnet). Use path_for_chain_id for testnet (7778).
+const DERIVATION_PATH_MAINNET: &str = "m/44'/7777'/0'/0/";
+const DERIVATION_PATH_TESTNET: &str = "m/44'/7778'/0'/0/";
 
 /// Generate a new BIP-39 mnemonic (12 words = 128 bits entropy).
 pub fn generate_mnemonic() -> Result<String, WalletError> {
@@ -18,14 +19,34 @@ pub fn generate_mnemonic() -> Result<String, WalletError> {
     Ok(mnemonic.to_string())
 }
 
-/// Derive keypair from mnemonic and index (path: m/44'/7777'/0'/0/index).
+/// Chain ID for mainnet (path 7777).
+pub const CHAIN_ID_MAINNET: u64 = 7777;
+/// Chain ID for testnet (path 7778).
+pub const CHAIN_ID_TESTNET: u64 = 7778;
+
+/// Derivation path prefix for the given chain ID (testnet 7778 uses 7778', mainnet 7777 uses 7777').
+pub fn derivation_path_prefix(chain_id: u64) -> &'static str {
+    if chain_id == CHAIN_ID_TESTNET {
+        DERIVATION_PATH_TESTNET
+    } else {
+        DERIVATION_PATH_MAINNET
+    }
+}
+
+/// Derive keypair from mnemonic and index (path: m/44'/7777'/0'/0/index for mainnet).
 pub fn derive_keypair(mnemonic_phrase: &str, index: u32) -> Result<KeyPair, WalletError> {
+    derive_keypair_for_chain(mnemonic_phrase, index, CHAIN_ID_MAINNET)
+}
+
+/// Derive keypair from mnemonic and index for the given chain ID (testnet 7778 uses m/44'/7778'/0'/0/index).
+pub fn derive_keypair_for_chain(mnemonic_phrase: &str, index: u32, chain_id: u64) -> Result<KeyPair, WalletError> {
     let mnemonic = Mnemonic::parse(mnemonic_phrase)
         .map_err(|e| WalletError::InvalidMnemonic(e.to_string()))?;
     let seed: [u8; 64] = mnemonic.to_seed("");
-    let path = format!("{}{}", DERIVATION_PATH_PREFIX, index);
+    let prefix = derivation_path_prefix(chain_id);
+    let path = format!("{}{}", prefix, index);
     let xprv = XPrv::derive_from_path(
-        &seed,
+        seed,
         &path
             .parse()
             .map_err(|e: bip32::Error| WalletError::InvalidMnemonic(e.to_string()))?,

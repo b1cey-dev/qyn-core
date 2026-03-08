@@ -1,5 +1,14 @@
 # Quyn Security
 
+## Transaction hash (EIP-155 + Keccak256)
+
+As of the post-audit fixes, transaction signing and hashing use **Keccak256** and **EIP-155** for Ethereum compatibility:
+
+- **Signing payload**: RLP of `[nonce, gas_price, gas_limit, to, value, data, chain_id, 0, 0]`, then Keccak256. This is the EIP-155 signing message.
+- **Transaction hash**: Keccak256(RLP([nonce, gas_price, gas_limit, to, value, data, v, r, s])). Same as Ethereum legacy tx hash format so tooling and indexers can treat QYN tx hashes like Ethereum.
+
+Previous versions used Sha256; the change is breaking for any stored tx hashes or external systems that assumed Sha256. Document the migration if upgrading.
+
 ## Attack Vectors and Mitigations
 
 ### Sybil resistance

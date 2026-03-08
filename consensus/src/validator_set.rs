@@ -39,8 +39,8 @@ pub struct Delegation {
     pub amount: U256,
 }
 
-/// In-memory validator set (can be backed by chain state later).
-#[derive(Clone, Debug, Default)]
+/// In-memory validator set (persisted to chain via put_validator_set_bytes).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ValidatorSet {
     validators: BTreeMap<Address, ValidatorInfo>,
     delegations: Vec<Delegation>,

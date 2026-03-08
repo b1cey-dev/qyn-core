@@ -1,15 +1,18 @@
 //! Mempool: in-memory pool of pending transactions.
 //!
-//! Keyed by sender; eviction by gas price or age when at capacity.
+//! Keyed by sender; eviction by sender (lowest total fees first), evicting ALL txs
+//! from that sender to preserve nonce ordering.
 
 use crate::error::CoreError;
 use crate::transaction::SignedTransaction;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::RwLock;
 
 /// Default maximum number of transactions in the mempool.
 pub const DEFAULT_MAX_POOL_SIZE: usize = 100_000;
+/// Max allowed nonce gap per sender: reject tx if nonce > (max nonce in pool for sender) + this.
+pub const MAX_NONCE_GAP: u64 = 10;
 
 /// Mempool for pending transactions. Thread-safe.
 pub struct Mempool {
@@ -38,7 +41,7 @@ impl Mempool {
         let sender = tx.sender().map_err(|_| CoreError::InvalidTransaction("Invalid signature".into()))?;
         let nonce = tx.nonce();
         let hash = tx.hash();
-        let hash_arr: [u8; 32] = hash.0.into();
+        let hash_arr: [u8; 32] = hash.0;
 
         let mut by_sender = self.by_sender.write().map_err(|e| CoreError::Mempool(e.to_string()))?;
         let mut by_hash = self.by_hash.write().map_err(|e| CoreError::Mempool(e.to_string()))?;
@@ -48,8 +51,17 @@ impl Mempool {
         }
 
         let entry = by_sender.entry(sender).or_default();
+        let max_nonce = entry.keys().max().copied();
+        if let Some(max) = max_nonce {
+            if nonce > max && nonce.saturating_sub(max) > MAX_NONCE_GAP {
+                return Err(CoreError::InvalidTransaction(format!(
+                    "nonce gap too large: have max nonce {} for sender, got {} (max gap {})",
+                    max, nonce, MAX_NONCE_GAP
+                )));
+            }
+        }
         if let Some(old) = entry.insert(nonce, tx) {
-            let old_arr: [u8; 32] = old.hash().0.into();
+            let old_arr: [u8; 32] = old.hash().0;
             by_hash.remove(&old_arr);
         }
         by_hash.insert(hash_arr, (sender, nonce));
@@ -57,35 +69,42 @@ impl Mempool {
         let total: usize = by_sender.values().map(|m| m.len()).sum();
         if total > self.max_size {
             let to_evict = total - self.max_size;
-            let evicted = self.evict_lowest_fee(&mut by_sender, &mut by_hash, to_evict);
+            let evicted = self.evict_by_sender(&mut by_sender, &mut by_hash, to_evict);
             Ok(Some(evicted))
         } else {
             Ok(None)
         }
     }
 
-    /// Evict `n` transactions with lowest gas price (and oldest first).
-    fn evict_lowest_fee(
+    /// Evict by sender: find sender(s) with lowest total fees and evict ALL their txs to preserve nonce ordering.
+    fn evict_by_sender(
         &self,
         by_sender: &mut HashMap<Address, BTreeMap<u64, SignedTransaction>>,
         by_hash: &mut HashMap<[u8; 32], (Address, u64)>,
-        n: usize,
+        mut need_evict: usize,
     ) -> usize {
-        let mut list: Vec<(u128, Address, u64)> = by_hash
-            .iter()
-            .map(|(_, (addr, nonce))| {
-                let tx = by_sender.get(addr).and_then(|m| m.get(nonce)).unwrap();
-                (tx.gas_price().to::<u128>(), *addr, *nonce)
-            })
-            .collect();
-        list.sort_by_key(|(price, _, _)| *price);
         let mut evicted = 0;
-        for (_, addr, nonce) in list.into_iter().take(n) {
-            if let Some(m) = by_sender.get_mut(&addr) {
-                if let Some(tx) = m.remove(&nonce) {
-                    let arr: [u8; 32] = tx.hash().0.into();
-                    by_hash.remove(&arr);
-                    evicted += 1;
+        while need_evict > 0 && !by_sender.is_empty() {
+            let sender_with_lowest: Option<(Address, U256)> = by_sender
+                .iter()
+                .map(|(addr, m)| {
+                    let total_fees: U256 = m
+                        .values()
+                        .map(|tx| tx.gas_price().saturating_mul(alloy_primitives::U256::from(tx.gas_limit())))
+                        .fold(U256::ZERO, |a, b| a.saturating_add(b));
+                    (*addr, total_fees)
+                })
+                .min_by_key(|(_, fees)| *fees);
+
+            let Some((addr, _)) = sender_with_lowest else { break };
+            let txs = by_sender.remove(&addr).unwrap_or_default();
+            for (_, tx) in txs {
+                let arr: [u8; 32] = tx.hash().0;
+                by_hash.remove(&arr);
+                evicted += 1;
+                need_evict = need_evict.saturating_sub(1);
+                if need_evict == 0 {
+                    break;
                 }
             }
         }
@@ -116,7 +135,7 @@ impl Mempool {
             .values()
             .flat_map(|m| m.values().cloned())
             .collect();
-        all.sort_by(|a, b| b.gas_price().cmp(&a.gas_price()));
+        all.sort_by_key(|b| std::cmp::Reverse(b.gas_price()));
         Ok(all.into_iter().take(limit).collect())
     }
 
@@ -153,5 +172,10 @@ mod tests {
         let pool = Mempool::new();
         let hash = [0u8; 32];
         assert!(!pool.remove(&hash).unwrap());
+    }
+
+    #[test]
+    fn max_nonce_gap_constant() {
+        assert_eq!(MAX_NONCE_GAP, 10);
     }
 }

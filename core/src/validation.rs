@@ -27,10 +27,8 @@ pub fn validate_block_header(
         if header.timestamp > current_timestamp + BLOCK_TIME_SECS * 2 {
             return Err(CoreError::InvalidBlock("timestamp too far in future".into()));
         }
-    } else {
-        if header.number != 0 {
-            return Err(CoreError::InvalidBlock("genesis must have number 0".into()));
-        }
+    } else if header.number != 0 {
+        return Err(CoreError::InvalidBlock("genesis must have number 0".into()));
     }
     Ok(())
 }

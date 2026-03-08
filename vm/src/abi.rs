@@ -1,7 +1,6 @@
 //! ABI encoding/decoding for contract calls (Ethereum-compatible).
 //! Use alloy_sol_types::SolCall for encode; decode via SolInterface or manual parsing.
 
-use crate::error::VmError;
 
 /// Encode contract call selector + args (first 4 bytes = selector, rest = abi-encoded params).
 pub fn encode_selector_and_args(selector: [u8; 4], args: &[u8]) -> Vec<u8> {

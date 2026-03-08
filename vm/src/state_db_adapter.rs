@@ -50,7 +50,7 @@ impl Database for StateDBAdapter<'_> {
             balance: to_revm_u256(balance),
             nonce,
             code_hash,
-            code: code.into(),
+            code,
         }))
     }
 

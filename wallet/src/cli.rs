@@ -1,6 +1,6 @@
 //! CLI wallet: new, import, balance, send, history, sign-tx.
 
-use crate::hd::{derive_keypair, generate_mnemonic};
+use crate::hd::{derive_keypair, derive_keypair_for_chain, generate_mnemonic};
 use crate::keys::address_from_str;
 use clap::Subcommand;
 use quyn_core::Transaction;
@@ -49,6 +49,7 @@ pub fn run_import(mnemonic: String, index: u32) -> Result<String, crate::error::
     Ok(format!("Address: 0x{}\n", hex::encode(addr.as_slice())))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_sign_tx(
     nonce: u64,
     gas_price: String,
@@ -60,7 +61,7 @@ pub fn run_sign_tx(
     mnemonic: &str,
     index: u32,
 ) -> Result<Vec<u8>, crate::error::WalletError> {
-    let kp = derive_keypair(mnemonic, index)?;
+    let kp = derive_keypair_for_chain(mnemonic, index, chain_id)?;
     let to_addr = to.as_ref().map(|s| address_from_str(s)).transpose()?;
     let value_u = U256::from_str_radix(value.trim_start_matches("0x"), 16)
         .or_else(|_| value.parse())

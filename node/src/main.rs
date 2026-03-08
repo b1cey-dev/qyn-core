@@ -2,10 +2,13 @@
 
 use clap::Parser;
 use quyn::runner::FullNode;
+use quyn_consensus::{select_proposer, slash_penalty_bps, SlashEvidence, SlashReason, ValidatorSet, MIN_STAKE};
 use quyn_core::{
     accept_block, apply_genesis_alloc,
     block::{Block, BlockBody, BlockHeader},
     chain::ChainDB,
+    error::CoreError,
+    genesis::split_fees,
     types::{BLOCK_TIME_SECS, CHAIN_ID_MAINNET, CHAIN_ID_TESTNET},
     validation::{validate_tx_against_state, validate_tx_basic},
 };
@@ -159,8 +162,24 @@ async fn run_devnet(data_dir: PathBuf, rpc_addr: String) -> Result<(), Box<dyn s
         chain.put_block(&genesis)?;
         chain.set_head(&genesis.hash())?;
         state.save_state_root(&genesis.hash(), genesis.header.state_root)?;
+        let mut validator_set = ValidatorSet::new();
+        validator_set
+            .register(devnet_validator, U256::from(MIN_STAKE), 0)
+            .map_err(|e| format!("validator set register: {}", e))?;
+        chain.put_validator_set_bytes(&bincode::serialize(&validator_set).map_err(|e| e.to_string())?)?;
         tracing::info!("Genesis block created (number=0). Validator: 0x{}", hex::encode(devnet_validator.as_slice()));
         tracing::info!("Faucet address: 0x{} (use: quyn faucet --to <ADDR> --amount <AMOUNT>)", hex::encode(faucet_addr.as_slice()));
+    }
+
+    if chain.get_validator_set_bytes()?.is_none() {
+        let mut validator_set = ValidatorSet::new();
+        let mut devnet_validator_bytes = [0u8; 20];
+        devnet_validator_bytes[19] = 1;
+        let devnet_validator = Address::from_slice(&devnet_validator_bytes);
+        validator_set
+            .register(devnet_validator, U256::from(MIN_STAKE), 0)
+            .map_err(|e| format!("validator set register: {}", e))?;
+        chain.put_validator_set_bytes(&bincode::serialize(&validator_set).map_err(|e| e.to_string())?)?;
     }
 
     let chain_prod = chain.clone();
@@ -200,15 +219,31 @@ fn produce_block(
     };
     let parent_number = parent.header.number;
     let parent_hash = parent.hash();
+    let next_number = parent_number + 1;
+
+    let proposer = chain
+        .get_validator_set_bytes()?
+        .and_then(|b| bincode::deserialize::<ValidatorSet>(&b).ok())
+        .and_then(|set| {
+            let active = set.active_validators();
+            let hash_arr: [u8; 32] = parent_hash.0;
+            select_proposer(&active, next_number, &hash_arr)
+        });
+    if let Some(proposer_addr) = proposer {
+        if proposer_addr != *validator {
+            return Ok(());
+        }
+    }
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .map_err(|e| format!("system time before UNIX_EPOCH: {}", e))?
         .as_secs();
 
     let candidates = mempool.get_best(100)?;
-    let mut to_apply = Vec::new();
+    let mut to_apply: Vec<(quyn_core::SignedTransaction, u64)> = Vec::new();
     let block_env = block_env(
-        parent_number + 1,
+        next_number,
         now,
         30_000_000,
         U256::ZERO,
@@ -219,27 +254,54 @@ fn produce_block(
             continue;
         }
         let mut adapter = StateDBAdapter::new(state);
-        if execute_tx(&mut adapter, tx, &block_env, chain_id).is_ok() {
-            to_apply.push(tx.clone());
+        if let Ok(result) = execute_tx(&mut adapter, tx, &block_env, chain_id) {
+            to_apply.push((tx.clone(), result.gas_used));
         }
     }
+    // Apply 50% burn / 50% proposer: revm credited full gas to coinbase (validator); deduct burn.
+    let total_gas_fees: U256 = to_apply
+        .iter()
+        .map(|(tx, gas_used)| tx.gas_price().saturating_mul(U256::from(*gas_used)))
+        .fold(U256::ZERO, |a, b| a.saturating_add(b));
+    let (burn, _proposer_portion) = split_fees(total_gas_fees);
+    if !burn.is_zero() {
+        let validator_bal = state.get_balance(validator)?;
+        state.set_balance(validator, validator_bal.saturating_sub(burn))?;
+    }
     let state_root = state.compute_state_root()?;
+    let txs_only: Vec<quyn_core::SignedTransaction> = to_apply.iter().map(|(tx, _)| tx.clone()).collect();
     let block = Block::new(
         parent_hash,
-        parent_number + 1,
+        next_number,
         state_root,
         B256::ZERO,
-        to_apply.clone(),
+        txs_only.clone(),
         *validator,
         vec![],
         30_000_000,
         U256::ZERO,
     )?;
-    accept_block(chain, state, &block, now)?;
-    for (i, tx) in to_apply.iter().enumerate() {
+    if let Err(e) = accept_block(chain, state, &block, now) {
+        if let CoreError::DoubleSign { validator: v, height, second_block, .. } = &e {
+            let evidence = SlashEvidence {
+                validator: *v,
+                reason: SlashReason::DoubleSign,
+                block_number: *height,
+                payload: second_block.as_slice().to_vec(),
+            };
+            let _ = chain.put_slash_evidence(v, *height, &bincode::serialize(&evidence).unwrap_or_default());
+            let bps = slash_penalty_bps(&SlashReason::DoubleSign);
+            if let Ok(bal) = state.get_balance(v) {
+                let penalty = bal * U256::from(bps) / U256::from(10000u32);
+                let _ = state.set_balance(v, bal.saturating_sub(penalty));
+            }
+        }
+        return Err(e.into());
+    }
+    for (i, (tx, _)) in to_apply.iter().enumerate() {
         chain.put_tx_receipt_index(&tx.hash(), block.hash(), block.header.number, i as u32)?;
         let h = tx.hash();
-        let arr: [u8; 32] = h.0.into();
+        let arr: [u8; 32] = h.0;
         let _ = mempool.remove(&arr);
     }
     tracing::info!("Produced block {} ({})", block.header.number, hex::encode(block.hash().as_slice()));
