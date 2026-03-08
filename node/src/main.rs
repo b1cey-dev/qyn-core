@@ -6,7 +6,7 @@ use quyn_core::{
     accept_block, apply_genesis_alloc,
     block::{Block, BlockBody, BlockHeader},
     chain::ChainDB,
-    types::{BLOCK_TIME_SECS, CHAIN_ID_MAINNET},
+    types::{BLOCK_TIME_SECS, CHAIN_ID_MAINNET, CHAIN_ID_TESTNET},
     validation::{validate_tx_against_state, validate_tx_basic},
 };
 use quyn_vm::{block_env, execute_tx, StateDBAdapter};
@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Command::Full { data_dir, rpc_addr } => {
             let node = FullNode::open(&data_dir)?;
             tracing::info!("Full node started. Chain and state opened. RPC will listen on {}", rpc_addr);
-            quyn_rpc::serve(node.chain, node.state, node.mempool, rpc_addr).await?;
+            quyn_rpc::serve(node.chain, node.state, node.mempool, CHAIN_ID_MAINNET, rpc_addr).await?;
         }
         Command::Light => println!("Light node not yet implemented."),
         Command::Validator => println!("Validator node not yet implemented."),
@@ -131,6 +131,12 @@ async fn run_devnet(data_dir: PathBuf, rpc_addr: String) -> Result<(), Box<dyn s
         alloc.insert(
             format!("0x{}", hex::encode(faucet_addr.as_slice())),
             format!("0x{:x}", 100_000_000u128 * one_qyn),
+        );
+        // Founder / team allocation: 200M QYN (20%) at block 0
+        const FOUNDER_ADDR: &str = "0x034ADBD563043B1ba028691839Adc37d07C08909";
+        alloc.insert(
+            FOUNDER_ADDR.to_string(),
+            format!("0x{:x}", 200_000_000u128 * one_qyn), // 200M QYN = 0x29a2241af62c000000000000
         );
         apply_genesis_alloc(&state, &alloc)?;
         let state_root = state.compute_state_root()?;
@@ -166,14 +172,14 @@ async fn run_devnet(data_dir: PathBuf, rpc_addr: String) -> Result<(), Box<dyn s
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(BLOCK_TIME_SECS)).await;
-            if let Err(e) = produce_block(&chain_prod, &state_prod, &mempool_prod, &validator_addr) {
+            if let Err(e) = produce_block(&chain_prod, &state_prod, &mempool_prod, &validator_addr, CHAIN_ID_TESTNET) {
                 tracing::warn!("Block production failed: {}", e);
             }
         }
     });
 
-    tracing::info!("Devnet started. RPC on {}. Blocks every {}s.", rpc_addr, BLOCK_TIME_SECS);
-    quyn_rpc::serve(chain, state, mempool, rpc_addr).await?;
+    tracing::info!("Devnet started (chain_id=7778). RPC on {}. Blocks every {}s.", rpc_addr, BLOCK_TIME_SECS);
+    quyn_rpc::serve(chain, state, mempool, CHAIN_ID_TESTNET, rpc_addr).await?;
     Ok(())
 }
 
@@ -182,6 +188,7 @@ fn produce_block(
     state: &quyn_core::StateDB,
     mempool: &quyn_core::Mempool,
     validator: &Address,
+    chain_id: u64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let head = match chain.get_head()? {
         Some(h) => h,
@@ -208,11 +215,11 @@ fn produce_block(
         *validator,
     );
     for tx in &candidates {
-        if validate_tx_basic(tx, CHAIN_ID_MAINNET).is_err() || validate_tx_against_state(tx, state).is_err() {
+        if validate_tx_basic(tx, chain_id).is_err() || validate_tx_against_state(tx, state).is_err() {
             continue;
         }
         let mut adapter = StateDBAdapter::new(state);
-        if execute_tx(&mut adapter, tx, &block_env).is_ok() {
+        if execute_tx(&mut adapter, tx, &block_env, chain_id).is_ok() {
             to_apply.push(tx.clone());
         }
     }
@@ -239,9 +246,20 @@ fn produce_block(
     Ok(())
 }
 
+async fn fetch_chain_id(url: &str) -> u64 {
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({ "jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1 });
+    let chain_id_hex = match client.post(url).json(&body).send().await {
+        Ok(r) => r.json::<serde_json::Value>().await.ok().and_then(|j| j.get("result").and_then(|r| r.as_str()).map(String::from)),
+        Err(_) => None,
+    }.unwrap_or_else(|| "0x1e61".into());
+    u64::from_str_radix(chain_id_hex.trim_start_matches("0x"), 16).unwrap_or(7777)
+}
+
 async fn run_faucet(to: String, amount: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let url = std::env::var("QYN_RPC_URL").unwrap_or_else(|_| "http://127.0.0.1:8545".into());
     let url = if url.ends_with('/') { format!("{}rpc", url) } else if !url.contains("/rpc") { format!("{}/rpc", url) } else { url };
+    let chain_id = fetch_chain_id(&url).await;
     let kp = devnet_faucet_keypair();
     let from_addr = format!("0x{}", hex::encode(kp.address().as_slice()));
     let client = reqwest::Client::new();
@@ -268,7 +286,7 @@ async fn run_faucet(to: String, amount: String) -> Result<(), Box<dyn std::error
         to: Some(to_addr),
         value: value_wei,
         data: vec![],
-        chain_id: 7777,
+        chain_id,
     };
     let signed = sign_transaction(&tx, &kp)?;
     let raw = bincode::serialize(&signed).map_err(|e| e.to_string())?;
@@ -310,6 +328,7 @@ async fn run_wallet(sub: WalletSub) -> Result<(), Box<dyn std::error::Error + Se
             let mnemonic = mnemonic.ok_or("wallet send requires --mnemonic")?;
             let url = std::env::var("QYN_RPC_URL").unwrap_or_else(|_| "http://127.0.0.1:8545".into());
             let url = if url.ends_with('/') { format!("{}rpc", url) } else if !url.contains("/rpc") { format!("{}/rpc", url) } else { url };
+            let chain_id = fetch_chain_id(&url).await;
             let from_addr = quyn_wallet::address_for_mnemonic(&mnemonic, index)?;
             let nonce_body = serde_json::json!({
                 "jsonrpc": "2.0",
@@ -334,7 +353,7 @@ async fn run_wallet(sub: WalletSub) -> Result<(), Box<dyn std::error::Error + Se
                 Some(to),
                 format!("0x{:x}", value_wei),
                 "".to_string(),
-                7777,
+                chain_id,
                 &mnemonic,
                 index,
             )?;
