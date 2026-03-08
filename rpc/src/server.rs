@@ -328,7 +328,6 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
         "eth_estimateGas" => Value::String("0x5208".to_string()),   // 21000 for simple transfers
         "eth_feeHistory" => serde_json::json!({
             "oldestBlock": "0x0",
-            "baseFeePerGas": ["0x3B9ACA00"],
             "gasUsedRatio": [0.0],
             "reward": [["0x3B9ACA00"]]
         }),
@@ -479,17 +478,20 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 "parentHash": format!("0x{}", hex::encode(block.header.parent_hash.as_slice())),
                 "stateRoot": format!("0x{}", hex::encode(block.header.state_root.as_slice())),
                 "transactionsRoot": format!("0x{}", hex::encode(block.header.transactions_root.as_slice())),
+                "receiptsRoot": format!("0x{}", hex::encode(block.header.receipts_root.as_slice())),
                 "timestamp": format!("0x{:x}", block.header.timestamp),
                 "miner": format!("0x{}", hex::encode(block.header.validator.as_slice())),
                 "transactions": txs_value,
                 "gasLimit": format!("0x{:x}", block.header.gas_limit),
-                "baseFeePerGas": format!("0x{:x}", block.header.base_fee_per_gas),
+                "gasUsed": "0x0",
                 "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
                 "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
                 "nonce": "0x0000000000000000",
                 "logsBloom": format!("0x{}", "00".repeat(256)),
                 "difficulty": "0x0",
                 "totalDifficulty": "0x0",
+                "extraData": "0x",
+                "size": "0x0",
                 "uncles": []
             })
         }
@@ -522,17 +524,20 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 "parentHash": format!("0x{}", hex::encode(block.header.parent_hash.as_slice())),
                 "stateRoot": format!("0x{}", hex::encode(block.header.state_root.as_slice())),
                 "transactionsRoot": format!("0x{}", hex::encode(block.header.transactions_root.as_slice())),
+                "receiptsRoot": format!("0x{}", hex::encode(block.header.receipts_root.as_slice())),
                 "timestamp": format!("0x{:x}", block.header.timestamp),
                 "miner": format!("0x{}", hex::encode(block.header.validator.as_slice())),
                 "transactions": txs_value,
                 "gasLimit": format!("0x{:x}", block.header.gas_limit),
-                "baseFeePerGas": format!("0x{:x}", block.header.base_fee_per_gas),
+                "gasUsed": "0x0",
                 "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
                 "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
                 "nonce": "0x0000000000000000",
                 "logsBloom": format!("0x{}", "00".repeat(256)),
                 "difficulty": "0x0",
                 "totalDifficulty": "0x0",
+                "extraData": "0x",
+                "size": "0x0",
                 "uncles": []
             })
         }
