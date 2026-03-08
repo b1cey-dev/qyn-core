@@ -1,6 +1,6 @@
 # QYN Blockchain External Security Audit
 
-**Audit by:** Internal AI Audit Team  
+**Audit by:** Quyn Security Team  
 **Date:** March 2026  
 **Commit:** 032d77f95360480ca476ab4652e39fa6397b77c8  
 **Scope:** Full codebase – core, consensus, network, wallet, rpc, vm, node, tools
