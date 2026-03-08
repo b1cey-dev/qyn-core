@@ -1,0 +1,19 @@
+# Build
+/target/
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.secret
+
+# Devnet / runtime data
+/devnet-fresh/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

@@ -1,0 +1,22 @@
+# Quyn (QYN) Blockchain - Cargo Workspace
+# MIT License - See LICENSE file
+[workspace]
+resolver = "2"
+members = [
+    "core",
+    "consensus",
+    "network",
+    "wallet",
+    "rpc",
+    "node",
+    "tools",
+    "vm",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Quyn Team"]
+license = "MIT"
+repository = "https://github.com/quyn/quyn"
+description = "Quyn - Decentralized payment network with smart contracts"

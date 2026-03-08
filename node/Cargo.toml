@@ -1,0 +1,34 @@
+[package]
+name = "quyn"
+version.workspace = true
+edition.workspace = true
+description = "Quyn node binary - full, light, validator"
+
+[lib]
+name = "quyn"
+path = "src/lib.rs"
+
+[[bin]]
+name = "quyn"
+path = "src/main.rs"
+
+[dependencies]
+quyn-core = { path = "../core" }
+quyn-consensus = { path = "../consensus" }
+quyn-network = { path = "../network" }
+quyn-wallet = { path = "../wallet" }
+quyn-rpc = { path = "../rpc" }
+quyn-vm = { path = "../vm" }
+tokio = { version = "1.35", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+clap = { version = "4.4", features = ["derive"] }
+thiserror = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+alloy-primitives = "0.7"
+serde_json = "1.0"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3.10"
