@@ -6,7 +6,7 @@ use quyn_core::SignedTransaction;
 use revm::db::{Database, DatabaseCommit};
 use revm::primitives::{BlockEnv, CfgEnv, Env, EnvWithHandlerCfg, HandlerCfg, SpecId, TxEnv};
 
-/// Chain ID for Quyn mainnet (used in EVM).
+/// Chain ID for Quyn mainnet (used in EVM when chain_id not passed).
 pub const QYN_CHAIN_ID: u64 = 7777;
 
 /// Result of executing a transaction.
@@ -32,7 +32,8 @@ pub(crate) fn to_revm_u256(u: U256) -> revm::primitives::U256 {
 
 /// Execute a signed transaction against the given state. State is modified in place.
 /// Use transact_commit so that DB implementing DatabaseCommit (e.g. StateDBAdapter) is persisted.
-pub fn execute_tx<DB>(db: &mut DB, tx: &SignedTransaction, block_env: &BlockEnv) -> Result<ExecutionResult, VmError>
+/// chain_id must match the node (e.g. 7778 for testnet, 7777 for mainnet).
+pub fn execute_tx<DB>(db: &mut DB, tx: &SignedTransaction, block_env: &BlockEnv, chain_id: u64) -> Result<ExecutionResult, VmError>
 where
     DB: Database<Error = quyn_core::CoreError> + DatabaseCommit,
 {
@@ -56,14 +57,14 @@ where
         transact_to,
         value,
         data,
-        chain_id: Some(QYN_CHAIN_ID),
+        chain_id: Some(chain_id),
         nonce: Some(tx.nonce()),
         access_list: vec![],
         blob_hashes: vec![],
         max_fee_per_blob_gas: None,
     };
     let mut cfg_env = CfgEnv::default();
-    cfg_env.chain_id = QYN_CHAIN_ID;
+    cfg_env.chain_id = chain_id;
     let env = Env {
         cfg: cfg_env,
         block: block_env.clone(),
@@ -105,7 +106,7 @@ where
 }
 
 /// Execute a call without committing state (for eth_call). Returns output or error.
-pub fn execute_call<DB>(db: &mut DB, tx: &SignedTransaction, block_env: &BlockEnv) -> Result<Vec<u8>, VmError>
+pub fn execute_call<DB>(db: &mut DB, tx: &SignedTransaction, block_env: &BlockEnv, chain_id: u64) -> Result<Vec<u8>, VmError>
 where
     DB: Database<Error = quyn_core::CoreError>,
 {
@@ -127,14 +128,14 @@ where
         transact_to,
         value,
         data,
-        chain_id: Some(QYN_CHAIN_ID),
+        chain_id: Some(chain_id),
         nonce: Some(tx.nonce()),
         access_list: vec![],
         blob_hashes: vec![],
         max_fee_per_blob_gas: None,
     };
     let mut cfg_env = CfgEnv::default();
-    cfg_env.chain_id = QYN_CHAIN_ID;
+    cfg_env.chain_id = chain_id;
     let env = Env {
         cfg: cfg_env,
         block: block_env.clone(),

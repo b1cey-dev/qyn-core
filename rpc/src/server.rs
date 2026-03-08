@@ -8,7 +8,6 @@ use axum::{Json, Router};
 use quyn_core::{
     ChainDB, Mempool, StateDB,
     validation::{validate_tx_basic, validate_tx_against_state},
-    types::CHAIN_ID_MAINNET,
 };
 use alloy_primitives::{Address, B256};
 use serde_json::Value;
@@ -24,16 +23,18 @@ pub struct AppState {
     pub chain: SharedChain,
     pub state: SharedState,
     pub mempool: SharedMempool,
+    pub chain_id: u64,
 }
 
-/// Serve RPC and REST until shutdown.
+/// Serve RPC and REST until shutdown. Pass chain_id so devnet can use 7778 and mainnet 7777.
 pub async fn serve(
     chain: SharedChain,
     state: SharedState,
     mempool: SharedMempool,
+    chain_id: u64,
     addr: String,
 ) -> Result<(), crate::error::RpcError> {
-    let app_state = AppState { chain, state, mempool };
+    let app_state = AppState { chain, state, mempool, chain_id };
     let app = Router::new()
         .route("/", get(health).post(jsonrpc_handler))
         .route("/rpc", get(rpc_chain_id_get).post(jsonrpc_handler))
@@ -56,13 +57,14 @@ async fn health() -> impl IntoResponse {
 }
 
 /// GET /rpc: return chain ID so wallets that probe with GET get a valid response.
-async fn rpc_chain_id_get() -> impl IntoResponse {
+async fn rpc_chain_id_get(State(state): State<AppState>) -> impl IntoResponse {
+    let result = format!("0x{:x}", state.chain_id);
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "result": "0x1e61"
+            "result": result
         })),
     )
 }
@@ -97,8 +99,8 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 .unwrap_or_else(|| "0x0".into());
             Value::String(num)
         }
-        "eth_chainId" => Value::String("0x1e61".to_string()),
-        "net_version" => Value::String("7777".to_string()),
+        "eth_chainId" => Value::String(format!("0x{:x}", state.chain_id)),
+        "net_version" => Value::String(state.chain_id.to_string()),
         "quyn_health" => Value::String("ok".to_string()),
         "eth_getBalance" => {
             let addr_hex = param_str(&params, 0).unwrap_or("");
@@ -133,7 +135,7 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 Err(e) => return error_value(e.to_string()),
             };
             let tx_hash = tx.hash();
-            if let Err(e) = validate_tx_basic(&tx, CHAIN_ID_MAINNET) {
+            if let Err(e) = validate_tx_basic(&tx, state.chain_id) {
                 return error_value(e.to_string());
             }
             if let Err(e) = validate_tx_against_state(&tx, &state.state) {

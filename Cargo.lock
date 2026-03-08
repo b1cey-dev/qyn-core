@@ -3640,6 +3640,7 @@ name = "quyn"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "bincode",
  "clap",
  "hex",
  "quyn-consensus",
