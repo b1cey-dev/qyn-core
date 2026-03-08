@@ -191,6 +191,8 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
         }
         "eth_chainId" => Value::String(format!("0x{:x}", state.chain_id)),
         "net_version" => Value::String(state.chain_id.to_string()),
+        "eth_gasPrice" => Value::String("0x3B9ACA00".to_string()), // 1 gwei
+        "eth_estimateGas" => Value::String("0x5208".to_string()),   // 21000 for simple transfers
         "quyn_health" => Value::String("ok".to_string()),
         "eth_getBalance" => {
             if let Err(e) = require_param_string(&params, 0) {
