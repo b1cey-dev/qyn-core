@@ -139,7 +139,9 @@ pub fn select_proposer(validators: &[ValidatorInfo], block_number: u64, parent_b
     if total_stake == 0 {
         return Some(validators[0].address);
     }
-    let mut idx = u64::from_be_bytes(seed[0..8].try_into().unwrap()) as u128 % total_stake;
+    let mut seed_arr = [0u8; 8];
+    seed_arr.copy_from_slice(&seed[0..8]);
+    let mut idx = u64::from_be_bytes(seed_arr) as u128 % total_stake;
     for v in validators {
         let s = v.total_stake().to::<u128>();
         if idx < s {

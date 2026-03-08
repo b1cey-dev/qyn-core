@@ -104,7 +104,11 @@ impl ChainDB {
     /// Get finalized block height (blocks at or below this cannot be reorged).
     pub fn get_finalized_height(&self) -> Result<Option<u64>, CoreError> {
         let v = self.db.get(KEY_FINALIZED_HEIGHT).map_err(|e| CoreError::Storage(e.to_string()))?;
-        Ok(v.and_then(|b| (b.len() == 8).then(|| u64::from_be_bytes(b.try_into().unwrap()))))
+        Ok(v.and_then(|b| {
+            (b.len() == 8)
+                .then(|| b[0..8].try_into().ok().map(u64::from_be_bytes))
+                .flatten()
+        }))
     }
 
     /// Get finalized block hash.
@@ -211,8 +215,14 @@ impl ChainDB {
             _ => return Ok(None),
         };
         let block_hash = B256::from_slice(&val[0..32]);
-        let block_number = u64::from_be_bytes(val[32..40].try_into().unwrap());
-        let index = u32::from_be_bytes(val[40..44].try_into().unwrap());
+        let block_number_arr: [u8; 8] = val[32..40]
+            .try_into()
+            .map_err(|_| CoreError::Storage("receipt index format".into()))?;
+        let index_arr: [u8; 4] = val[40..44]
+            .try_into()
+            .map_err(|_| CoreError::Storage("receipt index format".into()))?;
+        let block_number = u64::from_be_bytes(block_number_arr);
+        let index = u32::from_be_bytes(index_arr);
         Ok(Some((block_hash, block_number, index)))
     }
 }
@@ -301,5 +311,26 @@ mod tests {
         let hash = block.hash();
         let got = chain.get_block(&hash).unwrap().unwrap();
         assert_eq!(got.header.number, 0);
+    }
+
+    #[test]
+    fn get_finalized_height_none_when_empty() {
+        let dir = TempDir::new().unwrap();
+        let chain = ChainDB::open(dir.path()).unwrap();
+        assert!(chain.get_finalized_height().unwrap().is_none());
+        assert!(chain.get_finalized_hash().unwrap().is_none());
+    }
+
+    #[test]
+    fn tx_receipt_index_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let chain = ChainDB::open(dir.path()).unwrap();
+        let tx_hash = B256::from_slice(&[1u8; 32]);
+        let block_hash = B256::from_slice(&[2u8; 32]);
+        chain.put_tx_receipt_index(&tx_hash, block_hash, 5, 3).unwrap();
+        let got = chain.get_tx_receipt_index(&tx_hash).unwrap().unwrap();
+        assert_eq!(got.0, block_hash);
+        assert_eq!(got.1, 5);
+        assert_eq!(got.2, 3);
     }
 }

@@ -47,6 +47,7 @@ impl QuynBehaviour {
 pub fn build_swarm(
     keypair: libp2p::identity::Keypair,
 ) -> Result<libp2p::Swarm<QuynBehaviour>, NetworkError> {
+    let behaviour = QuynBehaviour::new_sync(keypair.public().to_peer_id(), keypair.public())?;
     let swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
         .with_tcp(
@@ -55,10 +56,7 @@ pub fn build_swarm(
             libp2p::yamux::Config::default,
         )
         .map_err(|e| NetworkError::Protocol(e.to_string()))?
-        .with_behaviour(|keypair| {
-            QuynBehaviour::new_sync(keypair.public().to_peer_id(), keypair.public())
-                .expect("quyn behaviour")
-        })
+        .with_behaviour(|_| behaviour)
         .map_err(|e| NetworkError::Protocol(e.to_string()))?
         .build();
     Ok(swarm)

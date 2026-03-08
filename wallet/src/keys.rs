@@ -38,8 +38,12 @@ impl KeyPair {
             .map_err(|e| WalletError::Signing(e.to_string()))?;
         let sig = secp.sign_ecdsa_recoverable(&msg, &sk);
         let (recovery_id, compact) = sig.serialize_compact();
-        let r: [u8; 32] = compact[0..32].try_into().unwrap();
-        let s: [u8; 32] = compact[32..64].try_into().unwrap();
+        let r: [u8; 32] = compact[0..32]
+            .try_into()
+            .map_err(|_| WalletError::Signing("signature compact length".into()))?;
+        let s: [u8; 32] = compact[32..64]
+            .try_into()
+            .map_err(|_| WalletError::Signing("signature compact length".into()))?;
         let v = recovery_id.to_i32() as u8;
         Ok((r, s, v))
     }

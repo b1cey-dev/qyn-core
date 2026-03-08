@@ -290,7 +290,14 @@ fn produce_block(
                 block_number: *height,
                 payload: second_block.as_slice().to_vec(),
             };
-            let _ = chain.put_slash_evidence(v, *height, &bincode::serialize(&evidence).unwrap_or_default());
+            let evidence_bytes = match bincode::serialize(&evidence) {
+                Ok(b) => b,
+                Err(err) => {
+                    tracing::error!("slash evidence serialization failed: {}; slashing still applied", err);
+                    vec![]
+                }
+            };
+            let _ = chain.put_slash_evidence(v, *height, &evidence_bytes);
             let bps = slash_penalty_bps(&SlashReason::DoubleSign);
             if let Ok(bal) = state.get_balance(v) {
                 let penalty = bal * U256::from(bps) / U256::from(10000u32);
