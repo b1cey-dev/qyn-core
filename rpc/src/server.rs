@@ -143,12 +143,15 @@ async fn jsonrpc_handler(
     let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
     let params = body.get("params").cloned().unwrap_or(Value::Array(vec![]));
     let id = body.get("id").cloned();
+    tracing::info!("RPC REQUEST: method={}, params_len={}", method, params.to_string().len());
     let result = dispatch(state, method, params).await;
     let response = if result.get("error").is_some() {
         serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": result["error"] })
     } else {
         serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result })
     };
+    let resp_str = response.to_string();
+    tracing::info!("RPC RESPONSE: method={}, result_len={}", method, resp_str.len());
     (StatusCode::OK, Json(response))
 }
 
@@ -360,18 +363,21 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
             if let Err(e) = require_param_string(&params, 0) {
                 return e;
             }
-            let hex_raw = param_str(&params, 0).unwrap_or("");
-            let mut raw_hex = hex_raw.trim_start_matches("0x").to_string();
+            let raw_hex = params
+                .get(0)
+                .and_then(|p| p.as_str())
+                .unwrap_or("")
+                .trim_start_matches("0x");
             tracing::info!("eth_sendRawTransaction: raw hex len={}", raw_hex.len());
-            if raw_hex.len() % 2 == 1 {
-                raw_hex.insert(0, '0');
-                tracing::info!("eth_sendRawTransaction: padded odd-length hex");
+            if raw_hex.len() % 2 != 0 {
+                tracing::error!("eth_sendRawTransaction: odd number of hex digits (len={})", raw_hex.len());
+                return error_value_with_code(-32602, "Invalid hex: odd number of digits");
             }
-            let bytes = match hex::decode(&raw_hex) {
+            let bytes = match hex::decode(raw_hex) {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::error!("eth_sendRawTransaction: hex decode error: {} (len={})", e, raw_hex.len());
-                    return error_value(format!("Invalid hex: {}", e));
+                    return error_value_with_code(-32602, format!("Invalid hex: {}", e));
                 }
             };
             if bytes.is_empty() {
@@ -688,6 +694,10 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
 
 fn error_value(msg: impl Into<String>) -> Value {
     serde_json::json!({"error": {"message": msg.into()}})
+}
+
+fn error_value_with_code(code: i64, msg: impl Into<String>) -> Value {
+    serde_json::json!({"error": {"code": code, "message": msg.into()}})
 }
 
 fn parse_address(s: &str) -> Result<Address, String> {
