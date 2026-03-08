@@ -12,7 +12,8 @@ use quyn_core::{
     ChainDB, Mempool, StateDB,
     validation::{validate_tx_basic, validate_tx_against_state},
 };
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, U256};
+use rlp::Rlp;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -179,6 +180,122 @@ fn require_param_string(params: &Value, i: usize) -> Result<(), Value> {
     Ok(())
 }
 
+/// Decode RLP bytes to U256 (big-endian, left-padded).
+fn rlp_bytes_to_u256(b: &[u8]) -> U256 {
+    let mut arr = [0u8; 32];
+    let len = b.len().min(32);
+    let start = 32 - len;
+    arr[start..].copy_from_slice(&b[b.len().saturating_sub(len)..]);
+    U256::from_be_bytes(arr)
+}
+
+/// Parse Ethereum legacy RLP tx: [nonce, gasPrice, gasLimit, to, value, data, v, r, s]
+fn parse_legacy_tx(bytes: &[u8]) -> Result<quyn_core::SignedTransaction, String> {
+    let rlp = Rlp::new(bytes);
+    if !rlp.is_list() {
+        return Err("expected RLP list".into());
+    }
+    let item_count = rlp.item_count().map_err(|e| e.to_string())?;
+    if item_count < 9 {
+        return Err(format!("legacy tx expects 9 fields, got {}", item_count));
+    }
+    let nonce: u64 = rlp.val_at(0).map_err(|e| e.to_string())?;
+    let gas_price = rlp_bytes_to_u256(rlp.at(1).map_err(|e| e.to_string())?.data().map_err(|e| e.to_string())?);
+    let gas_limit: u64 = rlp.val_at(2).map_err(|e| e.to_string())?;
+    let to_bytes = rlp.at(3).map_err(|e| e.to_string())?.data().map_err(|e| e.to_string())?;
+    let to = if to_bytes.is_empty() {
+        None
+    } else if to_bytes.len() == 20 {
+        Some(Address::from_slice(to_bytes))
+    } else {
+        return Err("invalid 'to' address length".into());
+    };
+    let value = rlp_bytes_to_u256(rlp.at(4).map_err(|e| e.to_string())?.data().map_err(|e| e.to_string())?);
+    let data = rlp.at(5).map_err(|e| e.to_string())?.data().map_err(|e| e.to_string())?.to_vec();
+    let v: u64 = rlp.val_at(6).map_err(|e| e.to_string())?;
+    let r_bytes = rlp.at(7).map_err(|e| e.to_string())?.data().map_err(|e| e.to_string())?;
+    let s_bytes = rlp.at(8).map_err(|e| e.to_string())?.data().map_err(|e| e.to_string())?;
+
+    let chain_id = if v >= 35 { (v - 35) / 2 } else { 0 };
+    let v_byte: u8 = if v >= 35 { ((v - 35) % 2 + 27) as u8 } else { v as u8 };
+
+    let mut r = [0u8; 32];
+    let mut s = [0u8; 32];
+    let r_len = r_bytes.len().min(32);
+    let s_len = s_bytes.len().min(32);
+    r[32 - r_len..].copy_from_slice(&r_bytes[r_bytes.len().saturating_sub(r_len)..]);
+    s[32 - s_len..].copy_from_slice(&s_bytes[s_bytes.len().saturating_sub(s_len)..]);
+
+    Ok(quyn_core::SignedTransaction {
+        transaction: quyn_core::Transaction {
+            nonce,
+            gas_price,
+            gas_limit,
+            to,
+            value,
+            data,
+            chain_id,
+        },
+        r,
+        s,
+        v: v_byte,
+    })
+}
+
+/// Parse EIP-1559 (type 2) tx: [chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList, signatureYParity, r, s]
+fn parse_eip1559_tx(bytes: &[u8]) -> Result<quyn_core::SignedTransaction, String> {
+    let rlp = Rlp::new(bytes);
+    if !rlp.is_list() {
+        return Err("expected RLP list".into());
+    }
+    let item_count = rlp.item_count().map_err(|e| e.to_string())?;
+    if item_count < 12 {
+        return Err(format!("EIP-1559 tx expects 12 fields, got {}", item_count));
+    }
+    let chain_id: u64 = rlp.val_at(0).map_err(|e| e.to_string())?;
+    let nonce: u64 = rlp.val_at(1).map_err(|e| e.to_string())?;
+    let _max_priority = rlp_bytes_to_u256(rlp.at(2).map_err(|e| e.to_string())?.data().map_err(|e| e.to_string())?);
+    let max_fee = rlp_bytes_to_u256(rlp.at(3).map_err(|e| e.to_string())?.data().map_err(|e| e.to_string())?);
+    let gas_limit: u64 = rlp.val_at(4).map_err(|e| e.to_string())?;
+    let to_bytes = rlp.at(5).map_err(|e| e.to_string())?.data().map_err(|e| e.to_string())?;
+    let to = if to_bytes.is_empty() {
+        None
+    } else if to_bytes.len() == 20 {
+        Some(Address::from_slice(to_bytes))
+    } else {
+        return Err("invalid 'to' address length".into());
+    };
+    let value = rlp_bytes_to_u256(rlp.at(6).map_err(|e| e.to_string())?.data().map_err(|e| e.to_string())?);
+    let data = rlp.at(7).map_err(|e| e.to_string())?.data().map_err(|e| e.to_string())?.to_vec();
+    let _access_list = rlp.at(8).map_err(|e| e.to_string())?;
+    let parity: u64 = rlp.val_at(9).map_err(|e| e.to_string())?;
+    let v_byte = 27 + (parity as u8);
+    let r_bytes = rlp.at(10).map_err(|e| e.to_string())?.data().map_err(|e| e.to_string())?;
+    let s_bytes = rlp.at(11).map_err(|e| e.to_string())?.data().map_err(|e| e.to_string())?;
+
+    let mut r = [0u8; 32];
+    let mut s = [0u8; 32];
+    let r_len = r_bytes.len().min(32);
+    let s_len = s_bytes.len().min(32);
+    r[32 - r_len..].copy_from_slice(&r_bytes[r_bytes.len().saturating_sub(r_len)..]);
+    s[32 - s_len..].copy_from_slice(&s_bytes[s_bytes.len().saturating_sub(s_len)..]);
+
+    Ok(quyn_core::SignedTransaction {
+        transaction: quyn_core::Transaction {
+            nonce,
+            gas_price: max_fee,
+            gas_limit,
+            to,
+            value,
+            data,
+            chain_id,
+        },
+        r,
+        s,
+        v: v_byte,
+    })
+}
+
 async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
     match method {
         "eth_blockNumber" => {
@@ -193,6 +310,13 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
         "net_version" => Value::String(state.chain_id.to_string()),
         "eth_gasPrice" => Value::String("0x3B9ACA00".to_string()), // 1 gwei
         "eth_estimateGas" => Value::String("0x5208".to_string()),   // 21000 for simple transfers
+        "eth_feeHistory" => serde_json::json!({
+            "oldestBlock": "0x0",
+            "baseFeePerGas": ["0x3B9ACA00"],
+            "gasUsedRatio": [0.0],
+            "reward": [["0x3B9ACA00"]]
+        }),
+        "eth_maxPriorityFeePerGas" => Value::String("0x3B9ACA00".to_string()), // 1 gwei
         "quyn_health" => Value::String("ok".to_string()),
         "eth_getBalance" => {
             if let Err(e) = require_param_string(&params, 0) {
@@ -227,13 +351,24 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 return e;
             }
             let hex_raw = param_str(&params, 0).unwrap_or("");
-            let bytes = match hex::decode(hex_raw.trim_start_matches("0x")) {
+            let raw_hex = hex_raw.trim_start_matches("0x");
+            let bytes = match hex::decode(raw_hex) {
                 Ok(b) => b,
-                Err(e) => return error_value(e.to_string()),
+                Err(e) => return error_value(format!("Invalid hex: {}", e)),
             };
-            let tx: quyn_core::SignedTransaction = match bincode::deserialize(&bytes) {
+            if bytes.is_empty() {
+                return error_value("Empty transaction");
+            }
+            let tx_result: Result<quyn_core::SignedTransaction, String> = if bytes[0] == 0x02 {
+                parse_eip1559_tx(&bytes[1..])
+            } else {
+                parse_legacy_tx(&bytes).or_else(|_| {
+                    bincode::deserialize(&bytes).map_err(|e| e.to_string())
+                })
+            };
+            let tx = match tx_result {
                 Ok(t) => t,
-                Err(e) => return error_value(e.to_string()),
+                Err(e) => return error_value(format!("Failed to parse tx: {}", e)),
             };
             let tx_hash = tx.hash();
             if let Err(e) = validate_tx_basic(&tx, state.chain_id) {

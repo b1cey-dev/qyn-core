@@ -3722,6 +3722,7 @@ dependencies = [
  "hex",
  "quyn-consensus",
  "quyn-core",
+ "rlp",
  "serde",
  "serde_json",
  "tempfile",
