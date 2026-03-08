@@ -190,7 +190,9 @@ fn rlp_bytes_to_u256(b: &[u8]) -> U256 {
 }
 
 /// Parse Ethereum legacy RLP tx: [nonce, gasPrice, gasLimit, to, value, data, v, r, s]
-fn parse_legacy_tx(bytes: &[u8]) -> Result<quyn_core::SignedTransaction, String> {
+/// raw_bytes: full RLP for tx hash (keccak256) so MetaMask receipt lookup works.
+fn parse_legacy_tx(raw_bytes: &[u8]) -> Result<quyn_core::SignedTransaction, String> {
+    let bytes = raw_bytes;
     let rlp = Rlp::new(bytes);
     if !rlp.is_list() {
         return Err("expected RLP list".into());
@@ -226,6 +228,8 @@ fn parse_legacy_tx(bytes: &[u8]) -> Result<quyn_core::SignedTransaction, String>
     r[32 - r_len..].copy_from_slice(&r_bytes[r_bytes.len().saturating_sub(r_len)..]);
     s[32 - s_len..].copy_from_slice(&s_bytes[s_bytes.len().saturating_sub(s_len)..]);
 
+    let hash_override = Some(alloy_primitives::keccak256(raw_bytes));
+
     Ok(quyn_core::SignedTransaction {
         transaction: quyn_core::Transaction {
             nonce,
@@ -239,11 +243,14 @@ fn parse_legacy_tx(bytes: &[u8]) -> Result<quyn_core::SignedTransaction, String>
         r,
         s,
         v: v_byte,
+        hash_override,
     })
 }
 
 /// Parse EIP-1559 (type 2) tx: [chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList, signatureYParity, r, s]
-fn parse_eip1559_tx(bytes: &[u8]) -> Result<quyn_core::SignedTransaction, String> {
+/// raw_bytes: full payload including 0x02 prefix, used for tx hash.
+fn parse_eip1559_tx(raw_bytes: &[u8]) -> Result<quyn_core::SignedTransaction, String> {
+    let bytes = if raw_bytes.first() == Some(&0x02) { &raw_bytes[1..] } else { raw_bytes };
     let rlp = Rlp::new(bytes);
     if !rlp.is_list() {
         return Err("expected RLP list".into());
@@ -280,6 +287,8 @@ fn parse_eip1559_tx(bytes: &[u8]) -> Result<quyn_core::SignedTransaction, String
     r[32 - r_len..].copy_from_slice(&r_bytes[r_bytes.len().saturating_sub(r_len)..]);
     s[32 - s_len..].copy_from_slice(&s_bytes[s_bytes.len().saturating_sub(s_len)..]);
 
+    let hash_override = Some(alloy_primitives::keccak256(raw_bytes));
+
     Ok(quyn_core::SignedTransaction {
         transaction: quyn_core::Transaction {
             nonce,
@@ -293,6 +302,7 @@ fn parse_eip1559_tx(bytes: &[u8]) -> Result<quyn_core::SignedTransaction, String
         r,
         s,
         v: v_byte,
+        hash_override,
     })
 }
 
@@ -351,16 +361,27 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 return e;
             }
             let hex_raw = param_str(&params, 0).unwrap_or("");
-            let raw_hex = hex_raw.trim_start_matches("0x");
-            let bytes = match hex::decode(raw_hex) {
+            let mut raw_hex = hex_raw.trim_start_matches("0x").to_string();
+            tracing::info!("eth_sendRawTransaction: raw hex len={}", raw_hex.len());
+            if raw_hex.len() % 2 == 1 {
+                raw_hex.insert(0, '0');
+                tracing::info!("eth_sendRawTransaction: padded odd-length hex");
+            }
+            let bytes = match hex::decode(&raw_hex) {
                 Ok(b) => b,
-                Err(e) => return error_value(format!("Invalid hex: {}", e)),
+                Err(e) => {
+                    tracing::error!("eth_sendRawTransaction: hex decode error: {} (len={})", e, raw_hex.len());
+                    return error_value(format!("Invalid hex: {}", e));
+                }
             };
             if bytes.is_empty() {
+                tracing::error!("eth_sendRawTransaction: empty transaction");
                 return error_value("Empty transaction");
             }
+            let tx_type = if bytes[0] == 0x02 { "EIP-1559" } else { "Legacy" };
+            tracing::info!("eth_sendRawTransaction: bytes len={}, type={}, first_bytes={:?}", bytes.len(), tx_type, &bytes[..bytes.len().min(32)]);
             let tx_result: Result<quyn_core::SignedTransaction, String> = if bytes[0] == 0x02 {
-                parse_eip1559_tx(&bytes[1..])
+                parse_eip1559_tx(&bytes)
             } else {
                 parse_legacy_tx(&bytes).or_else(|_| {
                     bincode::deserialize(&bytes).map_err(|e| e.to_string())
@@ -368,18 +389,38 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
             };
             let tx = match tx_result {
                 Ok(t) => t,
-                Err(e) => return error_value(format!("Failed to parse tx: {}", e)),
+                Err(e) => {
+                    tracing::error!("eth_sendRawTransaction: parse error: {}", e);
+                    return error_value(format!("Failed to parse tx: {}", e));
+                }
             };
             let tx_hash = tx.hash();
+            let sender = match tx.sender() {
+                Ok(a) => format!("0x{}", hex::encode(a.as_slice())),
+                Err(e) => {
+                    tracing::error!("eth_sendRawTransaction: signature recovery failed: {}", e);
+                    return error_value(format!("Invalid signature: {}", e));
+                }
+            };
+            tracing::info!("eth_sendRawTransaction: parsed tx hash=0x{}, sender={}, nonce={}", hex::encode(tx_hash.as_slice()), sender, tx.nonce());
             if let Err(e) = validate_tx_basic(&tx, state.chain_id) {
+                tracing::error!("eth_sendRawTransaction: validate_tx_basic failed: {}", e);
                 return error_value(e.to_string());
             }
             if let Err(e) = validate_tx_against_state(&tx, &state.state) {
+                tracing::error!("eth_sendRawTransaction: validate_tx_against_state failed: {}", e);
                 return error_value(e.to_string());
             }
             match state.mempool.insert(tx) {
-                Ok(_) => Value::String(format!("0x{}", hex::encode(tx_hash.as_slice()))),
-                Err(e) => error_value(e.to_string()),
+                Ok(_) => {
+                    let hash_hex = format!("0x{}", hex::encode(tx_hash.as_slice()));
+                    tracing::info!("eth_sendRawTransaction: tx accepted, hash={}", hash_hex);
+                    Value::String(hash_hex)
+                }
+                Err(e) => {
+                    tracing::error!("eth_sendRawTransaction: mempool insert failed: {}", e);
+                    error_value(e.to_string())
+                }
             }
         }
         "eth_getCode" => {
@@ -482,7 +523,7 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 Err(e) => return error_value(e),
             };
             match state.chain.get_tx_receipt_index(&tx_hash) {
-                Ok(Some((block_hash, block_number, index))) => {
+                Ok(Some((block_hash, block_number, index, _gas_used))) => {
                     let tx_json = state.chain.get_block(&block_hash).ok().flatten()
                         .and_then(|b| b.body.transactions.get(index as usize).cloned())
                         .map(|tx| tx_to_json(&tx))
@@ -610,13 +651,33 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 Err(e) => return error_value(e),
             };
             match state.chain.get_tx_receipt_index(&tx_hash) {
-                Ok(Some((block_hash, block_number, index))) => serde_json::json!({
-                    "transactionHash": format!("0x{}", hex::encode(tx_hash.as_slice())),
-                    "blockHash": format!("0x{}", hex::encode(block_hash.as_slice())),
-                    "blockNumber": format!("0x{:x}", block_number),
-                    "transactionIndex": format!("0x{:x}", index),
-                    "status": "0x1",
-                }),
+                Ok(Some((block_hash, block_number, index, gas_used))) => {
+                    let (from, to_val) = state.chain.get_block(&block_hash).ok().flatten()
+                        .and_then(|b| b.body.transactions.get(index as usize).cloned())
+                        .map(|tx| (
+                            format!("0x{}", hex::encode(tx.sender().ok().unwrap_or(Address::ZERO).as_slice())),
+                            tx.to().map(|a| serde_json::Value::String(format!("0x{}", hex::encode(a.as_slice())))),
+                        ))
+                        .unwrap_or((
+                            format!("0x{}", hex::encode(Address::ZERO.as_slice())),
+                            Some(serde_json::Value::String(format!("0x{}", hex::encode(Address::ZERO.as_slice())))),
+                        ));
+                    let to = to_val.unwrap_or(serde_json::Value::Null);
+                    let logs_bloom = "0x".to_string() + &"0".repeat(512);
+                    serde_json::json!({
+                        "transactionHash": format!("0x{}", hex::encode(tx_hash.as_slice())),
+                        "blockHash": format!("0x{}", hex::encode(block_hash.as_slice())),
+                        "blockNumber": format!("0x{:x}", block_number),
+                        "transactionIndex": format!("0x{:x}", index),
+                        "from": from,
+                        "to": to,
+                        "status": "0x1",
+                        "gasUsed": format!("0x{:x}", gas_used),
+                        "cumulativeGasUsed": format!("0x{:x}", gas_used),
+                        "logs": [],
+                        "logsBloom": logs_bloom,
+                    })
+                },
                 Ok(None) => Value::Null,
                 Err(e) => error_value(e.to_string()),
             }

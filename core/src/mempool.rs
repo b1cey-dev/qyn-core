@@ -47,6 +47,7 @@ impl Mempool {
         let mut by_hash = self.by_hash.write().map_err(|e| CoreError::Mempool(e.to_string()))?;
 
         if by_hash.contains_key(&hash_arr) {
+            tracing::debug!("mempool: tx already present (duplicate), hash=0x{}", hex::encode(hash.as_slice()));
             return Ok(None);
         }
 

@@ -306,8 +306,8 @@ fn produce_block(
         }
         return Err(e.into());
     }
-    for (i, (tx, _)) in to_apply.iter().enumerate() {
-        chain.put_tx_receipt_index(&tx.hash(), block.hash(), block.header.number, i as u32)?;
+    for (i, (tx, gas_used)) in to_apply.iter().enumerate() {
+        chain.put_tx_receipt_index(&tx.hash(), block.hash(), block.header.number, i as u32, *gas_used)?;
         let h = tx.hash();
         let arr: [u8; 32] = h.0;
         let _ = mempool.remove(&arr);

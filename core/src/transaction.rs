@@ -47,10 +47,12 @@ impl Transaction {
     }
 
     /// Recover sender address from signature (Ethereum style: Keccak256 of pubkey, last 20 bytes).
+    /// Accepts v as Ethereum format (27/28) or secp256k1 recovery id (0/1).
     pub fn recover_sender(&self, r: &[u8; 32], s: &[u8; 32], v: u8) -> Option<Address> {
         use secp256k1::{ecdsa::RecoverableSignature, Message, Secp256k1};
         let msg = Message::from_digest_slice(self.signing_hash().as_slice()).ok()?;
-        let rid = RecoveryId::from_i32(v as i32).ok()?;
+        let rid_val = if v >= 27 { (v - 27) as i32 } else { v as i32 };
+        let rid = RecoveryId::from_i32(rid_val).ok()?;
         let mut compact = [0u8; 64];
         compact[0..32].copy_from_slice(r);
         compact[32..64].copy_from_slice(s);
@@ -63,17 +65,25 @@ impl Transaction {
 }
 
 /// Signed transaction (with r, s, v).
+/// v: recovery byte (27/28 from RLP, or 0/1 from internal wallet).
+/// hash_override: when parsed from Ethereum RLP, the tx hash from raw bytes so MetaMask receipt lookup works.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedTransaction {
     pub transaction: Transaction,
     pub r: [u8; 32],
     pub s: [u8; 32],
     pub v: u8,
+    /// Tx hash from raw RLP bytes (legacy/EIP-1559) so it matches MetaMask. None for internal txs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_override: Option<B256>,
 }
 
 impl SignedTransaction {
-    /// Transaction hash: Keccak256(RLP([nonce, gas_price, gas_limit, to, value, data, v, r, s])) for Ethereum compatibility.
+    /// Transaction hash. Uses hash_override when set (from RLP) so MetaMask receipt lookup works.
     pub fn hash(&self) -> B256 {
+        if let Some(h) = &self.hash_override {
+            return *h;
+        }
         let mut stream = RlpStream::new_list(9);
         let t = &self.transaction;
         stream.append(&t.nonce);
@@ -83,7 +93,8 @@ impl SignedTransaction {
         stream.append(&to_bytes);
         stream.append(&u256_to_rlp_bytes(&t.value).as_slice());
         stream.append(&t.data.as_slice());
-        stream.append(&self.v);
+        let v_for_hash: u64 = if self.v >= 27 { self.v as u64 } else { 27 + self.v as u64 };
+        stream.append(&v_for_hash);
         stream.append(&self.r.as_slice());
         stream.append(&self.s.as_slice());
         keccak256(stream.out().as_ref())

@@ -16,5 +16,6 @@ pub fn sign_transaction(
         r,
         s,
         v,
+        hash_override: None,
     })
 }

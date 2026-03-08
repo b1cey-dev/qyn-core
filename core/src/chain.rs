@@ -190,24 +190,26 @@ impl ChainDB {
         Ok(b.and_then(|b| (b.len() == 32).then(|| B256::from_slice(&b))))
     }
 
-    /// Store tx hash -> (block_hash, block_number, index) for receipt lookup.
+    /// Store tx hash -> (block_hash, block_number, index, gas_used) for receipt lookup.
     pub fn put_tx_receipt_index(
         &self,
         tx_hash: &B256,
         block_hash: B256,
         block_number: u64,
         index: u32,
+        gas_used: u64,
     ) -> Result<(), CoreError> {
         let key = [COL_TX_RECEIPT, tx_hash.as_slice()].concat();
         let mut val = block_hash.as_slice().to_vec();
         val.extend_from_slice(&block_number.to_be_bytes());
         val.extend_from_slice(&index.to_be_bytes());
+        val.extend_from_slice(&gas_used.to_be_bytes());
         self.db.put(key, &val).map_err(|e| CoreError::Storage(e.to_string()))?;
         Ok(())
     }
 
-    /// Get receipt location for a tx, if included in a block.
-    pub fn get_tx_receipt_index(&self, tx_hash: &B256) -> Result<Option<(B256, u64, u32)>, CoreError> {
+    /// Get receipt location for a tx, if included in a block. Returns (block_hash, block_number, index, gas_used).
+    pub fn get_tx_receipt_index(&self, tx_hash: &B256) -> Result<Option<(B256, u64, u32, u64)>, CoreError> {
         let key = [COL_TX_RECEIPT, tx_hash.as_slice()].concat();
         let val = self.db.get(&key).map_err(|e| CoreError::Storage(e.to_string()))?;
         let val = match val {
@@ -223,7 +225,15 @@ impl ChainDB {
             .map_err(|_| CoreError::Storage("receipt index format".into()))?;
         let block_number = u64::from_be_bytes(block_number_arr);
         let index = u32::from_be_bytes(index_arr);
-        Ok(Some((block_hash, block_number, index)))
+        let gas_used = if val.len() >= 52 {
+            let arr: [u8; 8] = val[44..52]
+                .try_into()
+                .map_err(|_| CoreError::Storage("receipt index format".into()))?;
+            u64::from_be_bytes(arr)
+        } else {
+            21000
+        };
+        Ok(Some((block_hash, block_number, index, gas_used)))
     }
 }
 
@@ -327,10 +337,11 @@ mod tests {
         let chain = ChainDB::open(dir.path()).unwrap();
         let tx_hash = B256::from_slice(&[1u8; 32]);
         let block_hash = B256::from_slice(&[2u8; 32]);
-        chain.put_tx_receipt_index(&tx_hash, block_hash, 5, 3).unwrap();
+        chain.put_tx_receipt_index(&tx_hash, block_hash, 5, 3, 21000).unwrap();
         let got = chain.get_tx_receipt_index(&tx_hash).unwrap().unwrap();
         assert_eq!(got.0, block_hash);
         assert_eq!(got.1, 5);
         assert_eq!(got.2, 3);
+        assert_eq!(got.3, 21000);
     }
 }
