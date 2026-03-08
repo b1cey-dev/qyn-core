@@ -36,7 +36,7 @@ pub async fn serve(
     let app_state = AppState { chain, state, mempool };
     let app = Router::new()
         .route("/", get(health).post(jsonrpc_handler))
-        .route("/rpc", axum::routing::post(jsonrpc_handler))
+        .route("/rpc", get(rpc_chain_id_get).post(jsonrpc_handler))
         .route("/health", get(health))
         .layer(CorsLayer::permissive())
         .with_state(app_state);
@@ -53,6 +53,18 @@ pub async fn serve(
 
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({"status":"ok","network":"quyn"})))
+}
+
+/// GET /rpc: return chain ID so wallets that probe with GET get a valid response.
+async fn rpc_chain_id_get() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": "0x1e61"
+        })),
+    )
 }
 
 async fn jsonrpc_handler(
