@@ -242,6 +242,7 @@ fn produce_block(
         .as_secs();
 
     let candidates = mempool.get_best(100)?;
+    tracing::info!("produce_block: block #{}, candidates from mempool: {}", next_number, candidates.len());
     let mut to_apply: Vec<(quyn_core::SignedTransaction, u64)> = Vec::new();
     let block_env = block_env(
         next_number,
@@ -251,13 +252,22 @@ fn produce_block(
         *validator,
     );
     for tx in &candidates {
-        if validate_tx_basic(tx, chain_id).is_err() || validate_tx_against_state(tx, state).is_err() {
+        if let Err(e) = validate_tx_basic(tx, chain_id) {
+            tracing::debug!("produce_block: skip tx {} - validate_tx_basic: {}", hex::encode(tx.hash().as_slice()), e);
+            continue;
+        }
+        if let Err(e) = validate_tx_against_state(tx, state) {
+            tracing::debug!("produce_block: skip tx {} - validate_tx_against_state: {}", hex::encode(tx.hash().as_slice()), e);
             continue;
         }
         let mut adapter = StateDBAdapter::new(state);
-        if let Ok(result) = execute_tx(&mut adapter, tx, &block_env, chain_id) {
-            to_apply.push((tx.clone(), result.gas_used));
+        match execute_tx(&mut adapter, tx, &block_env, chain_id) {
+            Ok(result) => to_apply.push((tx.clone(), result.gas_used)),
+            Err(e) => tracing::warn!("produce_block: skip tx {} - execute_tx failed: {}", hex::encode(tx.hash().as_slice()), e),
         }
+    }
+    if !to_apply.is_empty() {
+        tracing::info!("produce_block: including {} txs in block #{}", to_apply.len(), next_number);
     }
     // Apply 50% burn / 50% proposer: revm credited full gas to coinbase (validator); deduct burn.
     let total_gas_fees: U256 = to_apply

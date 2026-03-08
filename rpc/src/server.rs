@@ -481,9 +481,16 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 "transactions": txs_value,
                 "gasLimit": format!("0x{:x}", block.header.gas_limit),
                 "baseFeePerGas": format!("0x{:x}", block.header.base_fee_per_gas),
+                "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "nonce": "0x0000000000000000",
+                "logsBloom": format!("0x{}", "00".repeat(256)),
+                "difficulty": "0x0",
+                "totalDifficulty": "0x0",
+                "uncles": []
             })
         }
-        "quyn_getBlockByHash" => {
+        "quyn_getBlockByHash" | "eth_getBlockByHash" => {
             if let Err(e) = require_param_string(&params, 0) {
                 return e;
             }
@@ -517,6 +524,13 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 "transactions": txs_value,
                 "gasLimit": format!("0x{:x}", block.header.gas_limit),
                 "baseFeePerGas": format!("0x{:x}", block.header.base_fee_per_gas),
+                "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "nonce": "0x0000000000000000",
+                "logsBloom": format!("0x{}", "00".repeat(256)),
+                "difficulty": "0x0",
+                "totalDifficulty": "0x0",
+                "uncles": []
             })
         }
         "quyn_getTransactionByHash" => {
