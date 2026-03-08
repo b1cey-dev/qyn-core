@@ -8,8 +8,8 @@ use revm::primitives::{Account, AccountInfo, Bytecode, HashMap, KECCAK_EMPTY};
 use std::cell::RefCell;
 
 fn from_revm_u256(u: revm::primitives::U256) -> U256 {
-    let bytes: [u8; 32] = u.to_be_bytes::<32>().as_slice().try_into().unwrap();
-    U256::from_be_bytes::<32>(bytes)
+    let bytes = u.to_be_bytes::<32>();
+    U256::from_be_bytes::<32>(bytes.as_slice().try_into().expect("revm U256 bytes are 32"))
 }
 
 /// Wraps StateDB + code-by-hash cache for revm Database.

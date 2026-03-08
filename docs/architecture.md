@@ -1,5 +1,17 @@
 # Quyn Architecture
 
+## State Root Design (M3)
+
+The state root is computed from a hash of all balance and nonce entries (MVP implementation). This is **not** a full Merkle Patricia Trie like Ethereum. Design decisions:
+
+- **Current:** SHA-256 over sorted `balance:*` and `nonce:*` keys from RocksDB. Fast, deterministic, suitable for single-node devnet.
+- **Light clients:** Merkle proofs are not available; light clients cannot verify state without full sync.
+- **Future:** A Merkle Patricia Trie implementation is planned for mainnet to enable light client support and Ethereum-compatible state proofs.
+
+---
+
+## Components
+
 - **core**: Block, transaction, chain DB, state DB, mempool, validation, fork resolution, genesis.
 - **consensus**: Proof of Stake validator set, proposer selection, rewards, slashing, delegation.
 - **network**: libp2p swarm (TCP, Noise, Kademlia, mDNS, Identify); block/tx protocol types.

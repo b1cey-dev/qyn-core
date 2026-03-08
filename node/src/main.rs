@@ -22,6 +22,7 @@ use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 /// Fixed devnet faucet secret (deterministic). Address is funded in genesis.
+/// SECURITY: This key must NEVER be used for mainnet or any real funds. Devnet only.
 fn devnet_faucet_keypair() -> KeyPair {
     let mut secret = [0u8; 32];
     secret[0] = 0xde;

@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Quyn JSON-RPC, WebSocket, REST API layer"
 
 [dependencies]
+quyn-consensus = { path = "../consensus" }
 quyn-core = { path = "../core" }
 tokio = { version = "1.35", features = ["full"] }
 axum = { version = "0.7", features = ["json", "ws"] }

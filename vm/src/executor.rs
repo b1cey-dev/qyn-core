@@ -26,8 +26,8 @@ pub struct Log {
 }
 
 pub(crate) fn to_revm_u256(u: U256) -> revm::primitives::U256 {
-    let bytes: [u8; 32] = u.to_be_bytes::<32>().as_slice().try_into().unwrap();
-    revm::primitives::U256::from_be_bytes::<32>(bytes)
+    let bytes = u.to_be_bytes::<32>();
+    revm::primitives::U256::from_be_bytes::<32>(bytes.as_slice().try_into().expect("U256::to_be_bytes::<32> is 32 bytes"))
 }
 
 /// Execute a signed transaction against the given state. State is modified in place.

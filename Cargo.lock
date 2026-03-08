@@ -3720,6 +3720,7 @@ dependencies = [
  "bincode",
  "futures",
  "hex",
+ "quyn-consensus",
  "quyn-core",
  "serde",
  "serde_json",

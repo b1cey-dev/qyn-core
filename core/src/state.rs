@@ -195,30 +195,6 @@ pub fn apply_transfer(
     Ok(())
 }
 
-/// Apply a simple transfer tx: deduct value+gas from sender, add value to to, fee to validator, increment nonce.
-/// Caller must have validated tx (balance, nonce, chain_id). Only supports value transfers (no contract calls).
-pub fn apply_simple_transfer_tx(
-    db: &StateDB,
-    tx: &crate::transaction::SignedTransaction,
-    validator: &Address,
-) -> Result<(), CoreError> {
-    let sender = tx.sender()?;
-    let gas_fee = tx.gas_price().saturating_mul(U256::from(tx.gas_limit()));
-    let (burn, proposer_fee) = crate::genesis::split_fees(gas_fee);
-    let _ = burn; // burn not credited to anyone
-    let from_bal = db.get_balance(&sender)?;
-    db.set_balance(&sender, from_bal.saturating_sub(tx.value()).saturating_sub(gas_fee))?;
-    if let Some(to) = tx.to() {
-        let to_bal = db.get_balance(&to)?;
-        db.set_balance(&to, to_bal.saturating_add(tx.value()))?;
-    }
-    let val_bal = db.get_balance(validator)?;
-    db.set_balance(validator, val_bal.saturating_add(proposer_fee))?;
-    let nonce = db.get_nonce(&sender)?;
-    db.set_nonce(&sender, nonce + 1)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

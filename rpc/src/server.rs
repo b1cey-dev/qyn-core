@@ -61,7 +61,10 @@ pub async fn serve(
 
     let cors = if std::env::var("QYN_PRODUCTION").map(|v| v == "1").unwrap_or(false) {
         CorsLayer::new()
-            .allow_origin(["https://getquyn.com".parse().unwrap(), "https://testnet.getquyn.com".parse().unwrap()])
+            .allow_origin([
+                "https://getquyn.com".parse().expect("valid CORS origin"),
+                "https://testnet.getquyn.com".parse().expect("valid CORS origin"),
+            ])
             .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
     } else {
         CorsLayer::permissive()
@@ -242,7 +245,18 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 Err(e) => error_value(e.to_string()),
             }
         }
-        "eth_getBlockByNumber" => {
+        "eth_getCode" => {
+            let addr_hex = param_str(&params, 0).unwrap_or("");
+            let addr = match parse_address(addr_hex) {
+                Ok(a) => a,
+                Err(e) => return error_value(e),
+            };
+            match state.state.get_code(&addr) {
+                Ok(code) => Value::String(format!("0x{}", hex::encode(&code))),
+                Err(e) => error_value(e.to_string()),
+            }
+        }
+        "quyn_getBlockByNumber" | "eth_getBlockByNumber" => {
             if let Err(e) = require_param_count(&params, 1) {
                 return e;
             }
@@ -253,8 +267,7 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                     .and_then(|h| state.chain.get_block(&h).ok().flatten())
                     .map(|b| b.header.number)
             } else {
-                let n = u64::from_str_radix(tag.trim_start_matches("0x"), 16).ok();
-                n
+                u64::from_str_radix(tag.trim_start_matches("0x"), 16).ok()
             };
             let block_number = match block_number {
                 Some(n) => n,
@@ -265,11 +278,7 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 _ => return Value::Null,
             };
             let txs_value = if full_tx {
-                Value::Array(
-                    block.body.transactions.iter()
-                        .map(tx_to_json)
-                        .collect()
-                )
+                Value::Array(block.body.transactions.iter().map(tx_to_json).collect())
             } else {
                 Value::Array(
                     block.body.transactions.iter()
@@ -290,18 +299,171 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 "baseFeePerGas": format!("0x{:x}", block.header.base_fee_per_gas),
             })
         }
-        "eth_getCode" => {
+        "quyn_getBlockByHash" => {
+            if let Err(e) = require_param_string(&params, 0) {
+                return e;
+            }
+            let hash_hex = param_str(&params, 0).unwrap_or("");
+            let block_hash = match parse_tx_hash(hash_hex) {
+                Ok(h) => h,
+                Err(e) => return error_value(e),
+            };
+            let full_tx = params.get(1).and_then(|p| p.as_bool()).unwrap_or(false);
+            let block = match state.chain.get_block(&block_hash) {
+                Ok(Some(b)) => b,
+                _ => return Value::Null,
+            };
+            let txs_value = if full_tx {
+                Value::Array(block.body.transactions.iter().map(tx_to_json).collect())
+            } else {
+                Value::Array(
+                    block.body.transactions.iter()
+                        .map(|tx| Value::String(format!("0x{}", hex::encode(tx.hash().as_slice()))))
+                        .collect()
+                )
+            };
+            serde_json::json!({
+                "number": format!("0x{:x}", block.header.number),
+                "hash": format!("0x{}", hex::encode(block.hash().as_slice())),
+                "parentHash": format!("0x{}", hex::encode(block.header.parent_hash.as_slice())),
+                "stateRoot": format!("0x{}", hex::encode(block.header.state_root.as_slice())),
+                "transactionsRoot": format!("0x{}", hex::encode(block.header.transactions_root.as_slice())),
+                "timestamp": format!("0x{:x}", block.header.timestamp),
+                "miner": format!("0x{}", hex::encode(block.header.validator.as_slice())),
+                "transactions": txs_value,
+                "gasLimit": format!("0x{:x}", block.header.gas_limit),
+                "baseFeePerGas": format!("0x{:x}", block.header.base_fee_per_gas),
+            })
+        }
+        "quyn_getTransactionByHash" => {
+            if let Err(e) = require_param_string(&params, 0) {
+                return e;
+            }
+            let hash_hex = param_str(&params, 0).unwrap_or("");
+            let tx_hash = match parse_tx_hash(hash_hex) {
+                Ok(h) => h,
+                Err(e) => return error_value(e),
+            };
+            match state.chain.get_tx_receipt_index(&tx_hash) {
+                Ok(Some((block_hash, block_number, index))) => {
+                    let tx_json = state.chain.get_block(&block_hash).ok().flatten()
+                        .and_then(|b| b.body.transactions.get(index as usize).cloned())
+                        .map(|tx| tx_to_json(&tx))
+                        .unwrap_or(Value::Null);
+                    serde_json::json!({
+                        "transaction": tx_json,
+                        "blockHash": format!("0x{}", hex::encode(block_hash.as_slice())),
+                        "blockNumber": format!("0x{:x}", block_number),
+                        "transactionIndex": format!("0x{:x}", index),
+                    })
+                }
+                Ok(None) => Value::Null,
+                Err(e) => error_value(e.to_string()),
+            }
+        }
+        "quyn_getAddressTransactions" => {
+            if let Err(e) = require_param_string(&params, 0) {
+                return e;
+            }
             let addr_hex = param_str(&params, 0).unwrap_or("");
             let addr = match parse_address(addr_hex) {
                 Ok(a) => a,
                 Err(e) => return error_value(e),
             };
-            match state.state.get_code(&addr) {
-                Ok(code) => Value::String(format!("0x{}", hex::encode(&code))),
-                Err(e) => error_value(e.to_string()),
+            let limit = params.get(1).and_then(|p| p.as_u64()).unwrap_or(100);
+            let head = state.chain.get_head().ok().flatten();
+            let head_num = head.and_then(|h| state.chain.get_block(&h).ok().flatten()).map(|b| b.header.number).unwrap_or(0);
+            let mut txs = Vec::new();
+            let mut count = 0u64;
+            for n in (0..=head_num).rev() {
+                if count >= limit {
+                    break;
+                }
+                let block = match state.chain.get_block_by_number(n) {
+                    Ok(Some(b)) => b,
+                    _ => continue,
+                };
+                for (i, tx) in block.body.transactions.iter().enumerate() {
+                    let from = tx.sender().ok().unwrap_or(Address::ZERO);
+                    let to = tx.to();
+                    if from == addr || to == Some(addr) {
+                        let mut j = tx_to_json(tx);
+                        if let Some(obj) = j.as_object_mut() {
+                            obj.insert("blockNumber".into(), serde_json::json!(format!("0x{:x}", n)));
+                            obj.insert("blockHash".into(), serde_json::json!(format!("0x{}", hex::encode(block.hash().as_slice()))));
+                            obj.insert("transactionIndex".into(), serde_json::json!(format!("0x{:x}", i)));
+                        }
+                        txs.push(j);
+                        count += 1;
+                        if count >= limit {
+                            break;
+                        }
+                    }
+                }
             }
+            Value::Array(txs)
         }
-        "eth_getTransactionReceipt" => {
+        "quyn_getNetworkStats" => {
+            let head = state.chain.get_head().ok().flatten();
+            let (block_count, total_txs) = head
+                .and_then(|h| state.chain.get_block(&h).ok().flatten())
+                .map(|b| {
+                    let mut txs = 0u64;
+                    for n in 0..=b.header.number {
+                        if let Ok(Some(blk)) = state.chain.get_block_by_number(n) {
+                            txs += blk.body.transactions.len() as u64;
+                        }
+                    }
+                    (b.header.number + 1, txs)
+                })
+                .unwrap_or((0, 0));
+            let block_time = 3u64;
+            let tps = if block_count > 0 {
+                (total_txs as f64) / ((block_count as f64) * (block_time as f64))
+            } else {
+                0.0
+            };
+            serde_json::json!({
+                "blockCount": block_count,
+                "totalTransactions": total_txs,
+                "blockTimeSecs": block_time,
+                "estimatedTps": format!("{:.2}", tps),
+                "chainId": format!("0x{:x}", state.chain_id),
+            })
+        }
+        "quyn_getValidatorList" => {
+            let bytes = state.chain.get_validator_set_bytes().ok().flatten().unwrap_or_default();
+            let validators: Vec<Value> = match bincode::deserialize::<quyn_consensus::ValidatorSet>(&bytes) {
+                Ok(set) => set
+                    .active_validators()
+                    .iter()
+                    .map(|v| serde_json::json!({
+                        "address": format!("0x{}", hex::encode(v.address.as_slice())),
+                        "stake": format!("0x{:x}", v.stake),
+                        "delegated": format!("0x{:x}", v.delegated),
+                        "active": v.active,
+                    }))
+                    .collect(),
+                Err(_) => vec![],
+            };
+            Value::Array(validators)
+        }
+        "quyn_getValidatorStats" => {
+            let bytes = state.chain.get_validator_set_bytes().ok().flatten().unwrap_or_default();
+            let (count, total_stake) = match bincode::deserialize::<quyn_consensus::ValidatorSet>(&bytes) {
+                Ok(set) => {
+                    let active = set.active_validators();
+                    let stake: u128 = active.iter().map(|v| v.total_stake().to::<u128>()).sum();
+                    (active.len(), stake)
+                }
+                Err(_) => (0, 0u128),
+            };
+            serde_json::json!({
+                "validatorCount": count,
+                "totalStaked": format!("0x{:x}", total_stake),
+            })
+        }
+        "quyn_getTransactionReceipt" | "eth_getTransactionReceipt" => {
             if let Err(e) = require_param_string(&params, 0) {
                 return e;
             }
