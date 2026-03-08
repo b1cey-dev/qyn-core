@@ -198,7 +198,7 @@ async fn run_devnet(data_dir: PathBuf, rpc_addr: String) -> Result<(), Box<dyn s
         }
     });
 
-    tracing::info!("Devnet started (chain_id=7778). RPC on {}. Blocks every {}s.", rpc_addr, BLOCK_TIME_SECS);
+    tracing::info!("Devnet started (chain_id=7779). RPC on {}. Blocks every {}s.", rpc_addr, BLOCK_TIME_SECS);
     quyn_rpc::serve(chain, state, mempool, CHAIN_ID_TESTNET, rpc_addr).await?;
     Ok(())
 }

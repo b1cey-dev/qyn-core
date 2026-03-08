@@ -41,7 +41,7 @@ pub struct AppState {
     pub rate_limiter: Arc<tokio::sync::RwLock<HashMap<String, (u32, Instant)>>>,
 }
 
-/// Serve RPC and REST until shutdown. Pass chain_id so devnet can use 7778 and mainnet 7777.
+/// Serve RPC and REST until shutdown. Pass chain_id so devnet can use 7779 and mainnet 7777.
 /// In production (env QYN_PRODUCTION=1), CORS is restricted to getquyn.com and testnet.getquyn.com.
 pub async fn serve(
     chain: SharedChain,

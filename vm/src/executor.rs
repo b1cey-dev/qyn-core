@@ -32,7 +32,7 @@ pub(crate) fn to_revm_u256(u: U256) -> revm::primitives::U256 {
 
 /// Execute a signed transaction against the given state. State is modified in place.
 /// Use transact_commit so that DB implementing DatabaseCommit (e.g. StateDBAdapter) is persisted.
-/// chain_id must match the node (e.g. 7778 for testnet, 7777 for mainnet).
+/// chain_id must match the node (e.g. 7779 for testnet, 7777 for mainnet).
 pub fn execute_tx<DB>(db: &mut DB, tx: &SignedTransaction, block_env: &BlockEnv, chain_id: u64) -> Result<ExecutionResult, VmError>
 where
     DB: Database<Error = quyn_core::CoreError> + DatabaseCommit,

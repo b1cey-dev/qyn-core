@@ -65,7 +65,7 @@ fn stress_1000_transactions() {
     setup_genesis(&chain, &state);
 
     let faucet = devnet_faucet_keypair();
-    let chain_id = 7778u64;
+    let chain_id = 7779u64;
     let start = Instant::now();
     for nonce in 0..1000 {
         let tx = quyn_core::Transaction {
@@ -97,7 +97,7 @@ fn stress_10000_transactions() {
     setup_genesis(&chain, &state);
 
     let faucet = devnet_faucet_keypair();
-    let chain_id = 7778u64;
+    let chain_id = 7779u64;
     let start = Instant::now();
     for nonce in 0..10_000 {
         let tx = quyn_core::Transaction {
@@ -130,7 +130,7 @@ fn stress_eviction_preserves_nonce_ordering() {
         let kp = quyn_wallet::KeyPair::from_secret(secret).unwrap();
         addrs.push(kp);
     }
-    let chain_id = 7778u64;
+    let chain_id = 7779u64;
     for (i, kp) in addrs.iter().enumerate() {
         for nonce in 0..3 {
             let tx = quyn_core::Transaction {

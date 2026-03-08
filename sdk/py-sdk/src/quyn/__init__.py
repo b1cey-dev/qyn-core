@@ -1,4 +1,4 @@
-"""Quyn (QYN) Python SDK - chainId 7777 mainnet, 7778 testnet."""
+"""Quyn (QYN) Python SDK - chainId 7777 mainnet, 7779 testnet."""
 
 from .client import QuynClient
 

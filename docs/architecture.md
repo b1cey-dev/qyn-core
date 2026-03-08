@@ -21,4 +21,4 @@ The state root is computed from a hash of all balance and nonce entries (MVP imp
 - **rpc**: JSON-RPC and REST server.
 - **sdk**: JavaScript and Python clients for RPC.
 
-Block time 3s; chainId 7777 (mainnet), 7778 (testnet); 1 billion QYN supply, 18 decimals; 50% of gas fees burned.
+Block time 3s; chainId 7777 (mainnet), 7779 (testnet); 1 billion QYN supply, 18 decimals; 50% of gas fees burned.

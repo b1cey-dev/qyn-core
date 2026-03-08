@@ -32,7 +32,7 @@ The QYN codebase implements a functional devnet with PoS consensus types, EVM ex
 - **H3 (Consensus integration):** ValidatorSet loaded from chain (or created at genesis), `select_proposer` called per block in `produce_block`; only the selected proposer produces. ValidatorSet persisted via `put_validator_set_bytes` / `get_validator_set_bytes`.
 - **H4 (Mempool eviction):** Eviction is by sender: we evict the sender with lowest total fees and remove *all* their txs to preserve nonce ordering. Per-sender nonce gap > 10 is rejected.
 - **L1:** `SystemTime::now().duration_since(UNIX_EPOCH)` now uses `map_err` and returns `Result`.
-- **L3:** Testnet uses derivation path `m/44'/7778'/0'/0/index` via `derive_keypair_for_chain(_, _, 7778)`; `run_sign_tx` uses chain_id to pick path.
+- **L3:** Testnet uses derivation path `m/44'/7779'/0'/0/index` via `derive_keypair_for_chain(_, _, 7779)`; `run_sign_tx` uses chain_id to pick path.
 - **M2:** RPC methods validate params array and types (`require_param_count`, `require_param_string`) and return clear JSON-RPC errors.
 - **M6:** Clippy warnings fixed (unused import, collapsible_else_if, needless_question_mark, useless_conversion, etc.); `cargo clippy --all-targets` clean (with allowed too_many_arguments where appropriate).
 
@@ -209,9 +209,9 @@ The QYN codebase implements a functional devnet with PoS consensus types, EVM ex
 
 ### L3. HD path uses chain type 7777 for testnet
 - **Location:** `wallet/src/hd.rs` (`DERIVATION_PATH_PREFIX`)
-- **Description:** Path is m/44'/7777'/0'/0/index. Testnet uses chain ID 7778; path could be 7778 for testnet wallets.
+- **Description:** Path is m/44'/7777'/0'/0/index. Testnet uses chain ID 7779; path could be 7779 for testnet wallets.
 - **Impact:** Same path for mainnet and testnet; keys shared across chains if user reuses mnemonic.
-- **Fix required:** Consider chain-specific path for testnet (e.g. 7778) or document key reuse implications.
+- **Fix required:** Consider chain-specific path for testnet (e.g. 7779) or document key reuse implications.
 
 ### L4. Validator set in consensus is in-memory only
 - **Location:** `consensus/src/validator_set.rs`
@@ -245,7 +245,7 @@ The QYN codebase implements a functional devnet with PoS consensus types, EVM ex
 | **Stress tests** | Pass | 1k txs ~321 insert/s, 10k txs ~316 insert/s; eviction preserves nonce ordering. |
 | **Integration tests** | Pass | Full node data dir, validator set persists across restart. |
 | **Code quality** | Pass | `cargo clippy --all-targets` clean; unwrap() removed from production paths. |
-| **Wallet security** | Pass | No private key or mnemonic in RPC or logs; BIP39/BIP44; testnet path 7778 (L3). |
+| **Wallet security** | Pass | No private key or mnemonic in RPC or logs; BIP39/BIP44; testnet path 7779 (L3). |
 
 ---
 

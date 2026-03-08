@@ -12,7 +12,7 @@ pub const TOTAL_SUPPLY: u128 = 1_000_000_000 * 10_u128.pow(18);
 /// Mainnet chain ID.
 pub const CHAIN_ID_MAINNET: u64 = 7777;
 /// Testnet chain ID.
-pub const CHAIN_ID_TESTNET: u64 = 7778;
+pub const CHAIN_ID_TESTNET: u64 = 7779;
 
 /// Placeholder block identifier (will be replaced with full Block type).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

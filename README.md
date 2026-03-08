@@ -3,7 +3,7 @@
 Decentralized payment network with smart contracts. Fast, cheap global transfers with EVM compatibility.
 
 - **Ticker**: QYN  
-- **Chain ID**: 7777 (mainnet), 7778 (testnet)  
+- **Chain ID**: 7777 (mainnet), 7779 (testnet)  
 - **Block time**: 3s  
 - **Supply**: 1 billion QYN (18 decimals)  
 - **Consensus**: Proof of Stake  
