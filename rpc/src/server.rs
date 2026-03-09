@@ -541,7 +541,7 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 "uncles": []
             })
         }
-        "quyn_getTransactionByHash" => {
+        "quyn_getTransactionByHash" | "eth_getTransactionByHash" => {
             if let Err(e) = require_param_string(&params, 0) {
                 return e;
             }
@@ -552,16 +552,24 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
             };
             match state.chain.get_tx_receipt_index(&tx_hash) {
                 Ok(Some((block_hash, block_number, index, _gas_used))) => {
-                    let tx_json = state.chain.get_block(&block_hash).ok().flatten()
+                    match state.chain.get_block(&block_hash).ok().flatten()
                         .and_then(|b| b.body.transactions.get(index as usize).cloned())
-                        .map(|tx| tx_to_json(&tx))
-                        .unwrap_or(Value::Null);
-                    serde_json::json!({
-                        "transaction": tx_json,
-                        "blockHash": format!("0x{}", hex::encode(block_hash.as_slice())),
-                        "blockNumber": format!("0x{:x}", block_number),
-                        "transactionIndex": format!("0x{:x}", index),
-                    })
+                    {
+                        Some(tx) => {
+                            let mut j = tx_to_json(&tx);
+                            if let Some(obj) = j.as_object_mut() {
+                                obj.insert("blockHash".into(), serde_json::json!(format!("0x{}", hex::encode(block_hash.as_slice()))));
+                                obj.insert("blockNumber".into(), serde_json::json!(format!("0x{:x}", block_number)));
+                                obj.insert("transactionIndex".into(), serde_json::json!(format!("0x{:x}", index)));
+                                obj.insert("input".into(), serde_json::json!(format!("0x{}", hex::encode(&tx.transaction.data))));
+                                obj.insert("v".into(), serde_json::json!(format!("0x{:x}", tx.v)));
+                                obj.insert("r".into(), serde_json::json!(format!("0x{}", hex::encode(&tx.r))));
+                                obj.insert("s".into(), serde_json::json!(format!("0x{}", hex::encode(&tx.s))));
+                            }
+                            j
+                        }
+                        None => Value::Null,
+                    }
                 }
                 Ok(None) => Value::Null,
                 Err(e) => error_value(e.to_string()),
