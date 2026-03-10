@@ -122,6 +122,16 @@ async fn run_devnet(data_dir: PathBuf, rpc_addr: String) -> Result<(), Box<dyn s
     let state = node.state.clone();
     let mempool = node.mempool.clone();
 
+    let ai_validator_enabled =
+        std::env::var("QYN_AI_VALIDATOR_SELECTION").unwrap_or_else(|_| "false".to_string()) == "true";
+    if ai_validator_enabled {
+        tracing::info!("QYN Intelligence: AI validator selection enabled (will activate when multi-node consensus is wired).");
+    } else {
+        tracing::info!(
+            "QYN Intelligence: AI validator selection disabled (enable with QYN_AI_VALIDATOR_SELECTION=true)."
+        );
+    }
+
     if chain.get_head()?.is_none() {
         let mut devnet_validator_bytes = [0u8; 20];
         devnet_validator_bytes[19] = 1;

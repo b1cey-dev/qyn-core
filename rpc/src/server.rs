@@ -769,6 +769,29 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 Err(e) => error_value(e.to_string()),
             }
         }
+        "qyn_getValidatorScores" => {
+            // Phase 2 placeholder: empty result until AI selector is wired.
+            serde_json::json!({ "validators": [] })
+        }
+        "qyn_getValidatorRecord" => {
+            if let Err(e) = require_param_string(&params, 0) {
+                return e;
+            }
+            let addr_hex = param_str(&params, 0).unwrap_or("");
+            // Phase 2 placeholder: return zeroed record shape.
+            serde_json::json!({
+                "address": addr_hex,
+                "totalBlocksProposed": 0,
+                "totalBlocksMissed": 0,
+                "totalInvalidBlocks": 0,
+                "averageResponseTimeMs": 0,
+                "lastSeenBlock": 0,
+                "slashCount": 0,
+                "uptimePercentage": 0.0_f64,
+                "joinedBlock": 0,
+                "reputationScore": 0
+            })
+        }
         _ => Value::String(format!("method {} not implemented", method)),
     }
 }
