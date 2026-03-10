@@ -1,4 +1,4 @@
-> ⚠️ PROPRIETARY SOURCE CODE  
+> PROPRIETARY SOURCE CODE  
 > This repository is source-available 
 > for transparency purposes only.  
 > Copying, forking, or commercial use 
