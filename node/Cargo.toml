@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 quyn-core = { path = "../core" }
 quyn-consensus = { path = "../consensus" }
+quyn-intelligence = { path = "../quyn-intelligence" }
 quyn-network = { path = "../network" }
 quyn-wallet = { path = "../wallet" }
 quyn-rpc = { path = "../rpc" }

@@ -3645,6 +3645,7 @@ dependencies = [
  "hex",
  "quyn-consensus",
  "quyn-core",
+ "quyn-intelligence",
  "quyn-network",
  "quyn-rpc",
  "quyn-vm",
@@ -3695,6 +3696,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "quyn-intelligence"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "hex",
+ "quyn-core",
+ "quyn-wallet",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "quyn-network"
 version = "0.1.0"
 dependencies = [
@@ -3722,6 +3738,7 @@ dependencies = [
  "hex",
  "quyn-consensus",
  "quyn-core",
+ "quyn-intelligence",
  "rlp",
  "serde",
  "serde_json",

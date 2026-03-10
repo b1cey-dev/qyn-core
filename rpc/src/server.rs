@@ -12,6 +12,7 @@ use quyn_core::{
     ChainDB, Mempool, StateDB,
     validation::{validate_tx_basic, validate_tx_against_state},
 };
+use quyn_intelligence::{FraudConfig, FraudDetector, FraudRecommendation};
 use alloy_primitives::{Address, B256, U256};
 use rlp::Rlp;
 use serde_json::Value;
@@ -715,6 +716,56 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                     })
                 },
                 Ok(None) => Value::Null,
+                Err(e) => error_value(e.to_string()),
+            }
+        }
+        "qyn_getFraudAnalysis" => {
+            if let Err(e) = require_param_string(&params, 0) {
+                return e;
+            }
+            let hash_hex = param_str(&params, 0).unwrap_or("");
+            let tx_hash = match parse_tx_hash(hash_hex) {
+                Ok(h) => h,
+                Err(e) => return error_value(e),
+            };
+            let tx_hash_arr: [u8; 32] = tx_hash.0;
+            let (tx, block_number) = match state.chain.get_tx_receipt_index(&tx_hash) {
+                Ok(Some((block_hash, block_number, index, _))) => {
+                    match state.chain.get_block(&block_hash).ok().flatten()
+                        .and_then(|b| b.body.transactions.get(index as usize).cloned())
+                    {
+                        Some(tx) => (tx, block_number),
+                        None => return Value::Null,
+                    }
+                }
+                Ok(None) => {
+                    match state.mempool.get_by_hash(&tx_hash_arr).ok().flatten() {
+                        Some(tx) => {
+                            let head_num = state.chain.get_head().ok().flatten()
+                                .and_then(|h| state.chain.get_block(&h).ok().flatten())
+                                .map(|b| b.header.number)
+                                .unwrap_or(0);
+                            (tx, head_num + 1)
+                        }
+                        None => return Value::Null,
+                    }
+                }
+                Err(e) => return error_value(e.to_string()),
+            };
+            let detector = FraudDetector::new(FraudConfig::default());
+            match detector.analyse_transaction(&tx, &state.chain, &state.state, block_number) {
+                Ok(analysis) => serde_json::json!({
+                    "transactionHash": format!("0x{}", hex::encode(analysis.transaction_hash)),
+                    "riskScore": analysis.risk_score,
+                    "flags": analysis.flags.iter().map(|f| f.as_str()).collect::<Vec<_>>(),
+                    "recommendation": match analysis.recommendation {
+                        FraudRecommendation::Include => "Include",
+                        FraudRecommendation::IncludeWithLog => "IncludeWithLog",
+                        FraudRecommendation::Delay => "Delay",
+                        FraudRecommendation::Reject => "Reject",
+                    },
+                    "timestamp": analysis.timestamp,
+                }),
                 Err(e) => error_value(e.to_string()),
             }
         }

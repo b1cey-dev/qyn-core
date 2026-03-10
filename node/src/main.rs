@@ -3,6 +3,7 @@
 use clap::Parser;
 use quyn::runner::FullNode;
 use quyn_consensus::{select_proposer, slash_penalty_bps, SlashEvidence, SlashReason, ValidatorSet, MIN_STAKE};
+use quyn_intelligence::{FraudConfig, FraudDetector, FraudRecommendation};
 use quyn_core::{
     accept_block, apply_genesis_alloc,
     block::{Block, BlockBody, BlockHeader},
@@ -243,6 +244,7 @@ fn produce_block(
 
     let candidates = mempool.get_best(100)?;
     tracing::info!("produce_block: block #{}, candidates from mempool: {}", next_number, candidates.len());
+    let fraud_detector = FraudDetector::new(FraudConfig::default());
     let mut to_apply: Vec<(quyn_core::SignedTransaction, u64)> = Vec::new();
     let block_env = block_env(
         next_number,
@@ -259,6 +261,43 @@ fn produce_block(
         if let Err(e) = validate_tx_against_state(tx, state) {
             tracing::debug!("produce_block: skip tx {} - validate_tx_against_state: {}", hex::encode(tx.hash().as_slice()), e);
             continue;
+        }
+        let analysis = match fraud_detector.analyse_transaction(tx, chain, state, next_number) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!("produce_block: fraud analysis failed for tx {}: {}", hex::encode(tx.hash().as_slice()), e);
+                continue;
+            }
+        };
+        match analysis.recommendation {
+            FraudRecommendation::Reject => {
+                tracing::error!(
+                    "Critical risk tx rejected: hash={:?} score={} flags={:?}",
+                    hex::encode(analysis.transaction_hash),
+                    analysis.risk_score,
+                    analysis.flags.iter().map(|f| f.as_str()).collect::<Vec<_>>()
+                );
+                let arr: [u8; 32] = tx.hash().0;
+                let _ = mempool.remove(&arr);
+                continue;
+            }
+            FraudRecommendation::Delay => {
+                tracing::warn!(
+                    "High risk tx delayed: hash={:?} score={}",
+                    hex::encode(analysis.transaction_hash),
+                    analysis.risk_score
+                );
+                continue;
+            }
+            FraudRecommendation::IncludeWithLog => {
+                tracing::warn!(
+                    "Suspicious tx included: hash={:?} score={} flags={:?}",
+                    hex::encode(analysis.transaction_hash),
+                    analysis.risk_score,
+                    analysis.flags.iter().map(|f| f.as_str()).collect::<Vec<_>>()
+                );
+            }
+            FraudRecommendation::Include => {}
         }
         let mut adapter = StateDBAdapter::new(state);
         match execute_tx(&mut adapter, tx, &block_env, chain_id) {

@@ -129,6 +129,17 @@ impl Mempool {
         }
     }
 
+    /// Get transaction by hash, if present in mempool.
+    pub fn get_by_hash(&self, tx_hash: &[u8; 32]) -> Result<Option<SignedTransaction>, CoreError> {
+        let by_hash = self.by_hash.read().map_err(|e| CoreError::Mempool(e.to_string()))?;
+        let (sender, nonce) = match by_hash.get(tx_hash) {
+            Some(p) => *p,
+            None => return Ok(None),
+        };
+        let by_sender = self.by_sender.read().map_err(|e| CoreError::Mempool(e.to_string()))?;
+        Ok(by_sender.get(&sender).and_then(|m| m.get(&nonce)).cloned())
+    }
+
     /// Get best transactions for block building: up to `limit` txs, ordered by gas price desc.
     pub fn get_best(&self, limit: usize) -> Result<Vec<SignedTransaction>, CoreError> {
         let by_sender = self.by_sender.read().map_err(|e| CoreError::Mempool(e.to_string()))?;

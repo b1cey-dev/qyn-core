@@ -11,6 +11,7 @@ members = [
     "node",
     "tools",
     "vm",
+    "quyn-intelligence",
 ]
 
 [workspace.package]
