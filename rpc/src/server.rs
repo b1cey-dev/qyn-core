@@ -784,6 +784,66 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 Err(e) => error_value(e.to_string()),
             }
         }
+        "qyn_getVerificationStats" => {
+            // For now return testnet simulation stats; later wire to real on-chain counters.
+            let base: u64 = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            // Deterministic but growing numbers based on time.
+            let total: u64 = (base % 10_000) + 1_247;
+            let trusted: u64 = (total as f64 * 0.73) as u64;
+            let flagged: u64 = (total as f64 * 0.19) as u64;
+            let rejected: u64 = total.saturating_sub(trusted + flagged);
+
+            serde_json::json!({
+                "totalVerifications": total,
+                "trustedCount": trusted,
+                "flaggedCount": flagged,
+                "rejectedCount": rejected,
+            })
+        }
+        "qyn_getRecentVerifications" => {
+            // Return last 10 simulated verifications for the live feed on /intelligence.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            let content_types = [
+                "ARTICLE",
+                "IMAGE",
+                "TEXT",
+                "VIDEO",
+                "DOCUMENT",
+                "SOCIAL_POST",
+            ];
+
+            let verifications: Vec<serde_json::Value> = (0..10)
+                .map(|i| {
+                    let score: u8 = ((now + i * 7) % 100) as u8;
+                    let ctype = content_types[(i as usize) % content_types.len()];
+                    let result = if score >= 70 {
+                        "TRUSTED"
+                    } else if score >= 40 {
+                        "UNCERTAIN"
+                    } else {
+                        "DISPUTED"
+                    };
+
+                    serde_json::json!({
+                        "verificationId": format!("0x{:064x}", now + i as u64),
+                        "contentType": ctype,
+                        "trustScore": score,
+                        "result": result,
+                        "verifiedAt": now.saturating_sub(i * 3),
+                    })
+                })
+                .collect();
+
+            serde_json::json!({ "verifications": verifications })
+        }
         "qyn_verifyContent" => {
             // Prototype of the QYN Verify RPC: analyse a content identifier (URL or text)
             // and return a structured verification result. Full on-chain recording can
