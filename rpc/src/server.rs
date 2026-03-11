@@ -12,12 +12,17 @@ use quyn_core::{
     ChainDB, Mempool, StateDB,
     validation::{validate_tx_basic, validate_tx_against_state},
 };
-use quyn_intelligence::{FraudConfig, FraudDetector, FraudRecommendation};
+use quyn_intelligence::{
+    ConcentrationMonitor, ContractScanner, FraudConfig, FraudDetector, FraudRecommendation,
+    RugPullConfig, RugPullDetector,
+    gas_optimiser::{BlockMetrics, CongestionLevel, GasConfig, GasOptimiser},
+};
 use alloy_primitives::{Address, B256, U256};
 use rlp::Rlp;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
@@ -41,6 +46,8 @@ pub struct AppState {
     pub mempool: SharedMempool,
     pub chain_id: u64,
     pub rate_limiter: Arc<tokio::sync::RwLock<HashMap<String, (u32, Instant)>>>,
+    pub rug_pull_detector: Arc<RwLock<RugPullDetector>>,
+    pub concentration_monitor: Arc<RwLock<ConcentrationMonitor>>,
 }
 
 /// Serve RPC and REST until shutdown. Pass chain_id so devnet can use 7779 and mainnet 7777.
@@ -53,12 +60,16 @@ pub async fn serve(
     addr: String,
 ) -> Result<(), crate::error::RpcError> {
     let rate_limiter = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+    let rug_pull_detector = Arc::new(RwLock::new(RugPullDetector::new(RugPullConfig::default())));
+    let concentration_monitor = Arc::new(RwLock::new(ConcentrationMonitor::new()));
     let app_state = AppState {
         chain,
         state,
         mempool,
         chain_id,
         rate_limiter,
+        rug_pull_detector,
+        concentration_monitor,
     };
 
     let cors = if std::env::var("QYN_PRODUCTION").map(|v| v == "1").unwrap_or(false) {
@@ -752,7 +763,10 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 }
                 Err(e) => return error_value(e.to_string()),
             };
-            let detector = FraudDetector::new(FraudConfig::default());
+            let detector = FraudDetector::new_with_rug_pull(
+                FraudConfig::default(),
+                state.rug_pull_detector.clone(),
+            );
             match detector.analyse_transaction(&tx, &state.chain, &state.state, block_number) {
                 Ok(analysis) => serde_json::json!({
                     "transactionHash": format!("0x{}", hex::encode(analysis.transaction_hash)),
@@ -792,6 +806,257 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 "reputationScore": 0
             })
         }
+        "qyn_getGasPrediction" => {
+            // Build an in-memory GasOptimiser from recent on-chain history.
+            let mut optimiser = GasOptimiser::new(GasConfig::default());
+            let head = state.chain.get_head().ok().flatten();
+            let current_block = head
+                .and_then(|h| state.chain.get_block(&h).ok().flatten())
+                .map(|b| b.header.number)
+                .unwrap_or(0);
+
+            if let Some(h) = head {
+                if let Ok(Some(latest_block)) = state.chain.get_block(&h) {
+                    let latest_number = latest_block.header.number;
+                    let start = latest_number.saturating_sub(99);
+                    for n in start..=latest_number {
+                        if let Ok(Some(b)) = state.chain.get_block_by_number(n) {
+                            let tx_count = b.body.transactions.len() as u32;
+                            let congestion_score = (tx_count as f64 / 100.0).min(1.0);
+                            let metrics = BlockMetrics {
+                                block_number: b.header.number,
+                                transaction_count: tx_count,
+                                average_gas_used: 21_000,
+                                timestamp: b.header.timestamp,
+                                congestion_score,
+                            };
+                            optimiser.record_block(metrics);
+                        }
+                    }
+                }
+            }
+
+            let prediction = optimiser.predict_gas_price(current_block);
+            let history = optimiser.get_fee_history();
+
+            let congestion_str = match prediction.congestion_level {
+                CongestionLevel::Low => "Low",
+                CongestionLevel::Medium => "Medium",
+                CongestionLevel::High => "High",
+                CongestionLevel::Critical => "Critical",
+            };
+
+            let trend = if history.len() >= 20 {
+                let recent: f64 = history
+                    .iter()
+                    .rev()
+                    .take(10)
+                    .map(|b| b.congestion_score)
+                    .sum::<f64>() / 10.0;
+                let older: f64 = history
+                    .iter()
+                    .rev()
+                    .skip(10)
+                    .take(10)
+                    .map(|b| b.congestion_score)
+                    .sum::<f64>() / 10.0;
+                if recent > older + 0.05 {
+                    "Rising"
+                } else if recent < older - 0.05 {
+                    "Falling"
+                } else {
+                    "Stable"
+                }
+            } else {
+                "Stable"
+            };
+
+            let gwei = prediction.recommended_gas_price as f64 / 1_000_000_000.0;
+
+            serde_json::json!({
+                "recommendedGasPrice": format!("0x{:x}", prediction.recommended_gas_price),
+                "recommendedGasPriceGwei": format!("{:.1}", gwei),
+                "confidence": prediction.confidence,
+                "congestionLevel": congestion_str,
+                "estimatedConfirmationBlocks": prediction.estimated_confirmation_blocks,
+                "optimalSendWindow": prediction.optimal_send_window,
+                "trend": trend
+            })
+        }
+        "qyn_getCongestionHistory" => {
+            let mut optimiser = GasOptimiser::new(GasConfig::default());
+            let head = state.chain.get_head().ok().flatten();
+
+            if let Some(h) = head {
+                if let Ok(Some(latest_block)) = state.chain.get_block(&h) {
+                    let latest_number = latest_block.header.number;
+                    let start = latest_number.saturating_sub(99);
+                    for n in start..=latest_number {
+                        if let Ok(Some(b)) = state.chain.get_block_by_number(n) {
+                            let tx_count = b.body.transactions.len() as u32;
+                            let congestion_score = (tx_count as f64 / 100.0).min(1.0);
+                            let metrics = BlockMetrics {
+                                block_number: b.header.number,
+                                transaction_count: tx_count,
+                                average_gas_used: 21_000,
+                                timestamp: b.header.timestamp,
+                                congestion_score,
+                            };
+                            optimiser.record_block(metrics);
+                        }
+                    }
+                }
+            }
+
+            let history = optimiser.get_fee_history();
+            let blocks: Vec<serde_json::Value> = history
+                .iter()
+                .map(|b| {
+                    serde_json::json!({
+                        "blockNumber": b.block_number,
+                        "transactionCount": b.transaction_count,
+                        "congestionScore": b.congestion_score,
+                        "timestamp": b.timestamp,
+                    })
+                })
+                .collect();
+
+            serde_json::json!({ "blocks": blocks })
+        }
+        "qyn_getContractRiskProfile" => {
+            let contract_hex = params.get(0).and_then(|p| p.as_str()).or_else(|| params.get("contract").and_then(|v| v.as_str())).unwrap_or("");
+            let contract_arr = match parse_address_array(contract_hex) {
+                Ok(a) => a,
+                Err(e) => return error_value(e),
+            };
+            let guard = state.rug_pull_detector.read().unwrap();
+            match guard.get_contract_profile(&contract_arr) {
+                Some(p) => {
+                    let recommendation = match p.risk_score {
+                        0..=30 => "Safe",
+                        31..=60 => "Caution",
+                        61..=85 => "HighRisk",
+                        _ => "Dangerous",
+                    };
+                    serde_json::json!({
+                        "contractAddress": format!("0x{}", hex::encode(p.contract_address)),
+                        "deployer": format!("0x{}", hex::encode(p.deployer)),
+                        "deployBlock": p.deploy_block,
+                        "riskScore": p.risk_score,
+                        "riskFactors": p.risk_factors.iter().map(|f| format!("{:?}", f)).collect::<Vec<_>>(),
+                        "recommendation": recommendation,
+                        "isVerified": p.is_verified,
+                        "liquidityLocked": p.liquidity_locked,
+                        "lockExpiryBlock": p.lock_expiry_block,
+                        "topHolderPercent": p.top_holder_percent,
+                        "holderCount": p.holder_count,
+                    })
+                }
+                None => {
+                    let empty_factors: Vec<String> = vec![];
+                    serde_json::json!({
+                        "contractAddress": format!("0x{}", hex::encode(contract_arr)),
+                        "deployer": "0x0000000000000000000000000000000000000000",
+                        "deployBlock": 0,
+                        "riskScore": 0,
+                        "riskFactors": empty_factors,
+                        "recommendation": "Unknown",
+                        "isVerified": false,
+                        "liquidityLocked": false,
+                        "lockExpiryBlock": Value::Null,
+                        "topHolderPercent": 0.0_f64,
+                        "holderCount": 0,
+                    })
+                }
+            }
+        }
+        "qyn_scanContract" => {
+            let source_code = params.get(0).and_then(|p| p.as_str()).or_else(|| params.get("sourceCode").and_then(|v| v.as_str())).unwrap_or("");
+            let result = ContractScanner::scan_solidity(source_code);
+            serde_json::json!({
+                "riskScore": result.risk_score,
+                "riskFactors": result.risk_factors.iter().map(|f| format!("{:?}", f)).collect::<Vec<_>>(),
+                "recommendation": format!("{:?}", result.recommendation),
+                "details": result.details,
+            })
+        }
+        "qyn_getTokenConcentration" => {
+            let token_hex = params.get(0).and_then(|p| p.as_str()).or_else(|| params.get("token").and_then(|v| v.as_str())).unwrap_or("");
+            let token_arr = match parse_address_array(token_hex) {
+                Ok(a) => a,
+                Err(e) => return error_value(e),
+            };
+            let guard = state.concentration_monitor.read().unwrap();
+            let summary = guard.get_token_risk_summary(&token_arr);
+            let top_holders: Vec<Value> = guard
+                .get_top_holders(&token_arr, 10)
+                .into_iter()
+                .map(|(addr, pct)| serde_json::json!({
+                    "address": format!("0x{}", hex::encode(addr)),
+                    "percent": pct,
+                }))
+                .collect();
+            serde_json::json!({
+                "totalHolders": summary.total_holders,
+                "topHolderPercent": summary.top_holder_percent,
+                "top5HoldersPercent": summary.top_5_holders_percent,
+                "isHighConcentration": summary.is_high_concentration,
+                "concentrationRisk": format!("{:?}", summary.concentration_risk),
+                "topHolders": top_holders,
+            })
+        }
+        "qyn_lockLiquidity" => {
+            let contract_hex = params.get(0).and_then(|p| p.as_str()).or_else(|| params.get("contract").and_then(|v| v.as_str())).unwrap_or("");
+            let amount_str = params.get(1).and_then(|p| p.as_str()).or_else(|| params.get("amount").and_then(|v| v.as_str())).unwrap_or("0");
+            let period_str = params.get(2).and_then(|p| p.as_str()).or_else(|| params.get("lockPeriodBlocks").and_then(|v| v.as_str())).unwrap_or("0");
+            let locker_hex = params.get(3).and_then(|p| p.as_str()).or_else(|| params.get("locker").and_then(|v| v.as_str())).unwrap_or("");
+            let contract_arr = match parse_address_array(contract_hex) {
+                Ok(a) => a,
+                Err(e) => return error_value(e),
+            };
+            let amount = if amount_str.starts_with("0x") {
+                u128::from_str_radix(amount_str.trim_start_matches("0x"), 16).unwrap_or(0)
+            } else {
+                amount_str.parse().unwrap_or(0)
+            };
+            let lock_period: u64 = period_str.parse().unwrap_or(0);
+            let locker_arr = match parse_address_array(locker_hex) {
+                Ok(a) => a,
+                Err(e) => return error_value(e),
+            };
+            let current_block = state.chain.get_head().ok().flatten()
+                .and_then(|h| state.chain.get_block(&h).ok().flatten())
+                .map(|b| b.header.number)
+                .unwrap_or(0);
+            let mut guard = state.rug_pull_detector.write().unwrap();
+            let lock = guard.lock_liquidity(contract_arr, amount, lock_period, locker_arr, current_block);
+            let lock_id = alloy_primitives::keccak256(
+                [lock.contract.as_ref(), lock.lock_start_block.to_be_bytes().as_slice()].concat().as_slice()
+            );
+            serde_json::json!({
+                "lockId": format!("0x{}", hex::encode(lock_id.0)),
+                "contract": format!("0x{}", hex::encode(lock.contract)),
+                "lockedAmount": lock.locked_amount.to_string(),
+                "lockStartBlock": lock.lock_start_block,
+                "lockExpiryBlock": lock.lock_expiry_block,
+                "isActive": lock.is_active,
+            })
+        }
+        "qyn_getRugPullAlerts" => {
+            let guard = state.rug_pull_detector.read().unwrap();
+            let alerts: Vec<Value> = guard.get_all_alerts().into_iter().map(|a| {
+                serde_json::json!({
+                    "alertId": format!("0x{}", hex::encode(a.alert_id)),
+                    "contract": format!("0x{}", hex::encode(a.contract)),
+                    "deployer": format!("0x{}", hex::encode(a.deployer)),
+                    "alertType": format!("{:?}", a.alert_type),
+                    "severity": format!("{:?}", a.severity),
+                    "description": a.description,
+                    "triggeredBlock": a.triggered_block,
+                })
+            }).collect();
+            serde_json::json!({ "alerts": alerts })
+        }
         _ => Value::String(format!("method {} not implemented", method)),
     }
 }
@@ -813,6 +1078,12 @@ fn parse_address(s: &str) -> Result<Address, String> {
     let mut arr = [0u8; 20];
     arr.copy_from_slice(&bytes);
     Ok(Address::from_slice(&arr))
+}
+
+/// Parse hex address to fixed 20-byte array for intelligence APIs.
+fn parse_address_array(s: &str) -> Result<[u8; 20], String> {
+    let addr = parse_address(s)?;
+    addr.as_slice().try_into().map_err(|_| "address must be 20 bytes".into())
 }
 
 fn parse_tx_hash(s: &str) -> Result<B256, String> {

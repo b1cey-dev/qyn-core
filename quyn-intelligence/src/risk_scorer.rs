@@ -41,6 +41,11 @@ pub enum FraudFlag {
     DustAttack,
     RapidWalletDrain,
     SuspiciousRecipient,
+    PotentialRugPull,
+    SuspiciousLargeSell,
+    HighConcentrationSell,
+    LiquidityDrainAttempt,
+    SuspiciousContractInteraction,
 }
 
 impl FraudFlag {
@@ -55,6 +60,11 @@ impl FraudFlag {
             FraudFlag::DustAttack => "DUST_ATTACK",
             FraudFlag::RapidWalletDrain => "RAPID_WALLET_DRAIN",
             FraudFlag::SuspiciousRecipient => "SUSPICIOUS_RECIPIENT",
+            FraudFlag::PotentialRugPull => "POTENTIAL_RUG_PULL",
+            FraudFlag::SuspiciousLargeSell => "SUSPICIOUS_LARGE_SELL",
+            FraudFlag::HighConcentrationSell => "HIGH_CONCENTRATION_SELL",
+            FraudFlag::LiquidityDrainAttempt => "LIQUIDITY_DRAIN_ATTEMPT",
+            FraudFlag::SuspiciousContractInteraction => "SUSPICIOUS_CONTRACT_INTERACTION",
         }
     }
 }

@@ -2,10 +2,13 @@
 
 use alloy_primitives::Address;
 use quyn_core::{ChainDB, SignedTransaction, StateDB};
+use std::sync::Arc;
+use std::sync::RwLock;
 
 use crate::models::FraudConfig;
 use crate::patterns::PatternDatabase;
 use crate::risk_scorer::{get_recommendation, FraudAnalysis, FraudFlag};
+use crate::rug_pull_detector::{AlertSeverity, ContractRiskProfile, RugPullDetector};
 
 /// 1 QYN = 10^18 wei
 const ONE_QYN_WEI: u128 = 10_u128.pow(18);
@@ -29,6 +32,8 @@ const RAPID_DRAIN_BALANCE_PCT: u128 = 50;
 pub struct FraudDetector {
     pub pattern_db: PatternDatabase,
     pub config: FraudConfig,
+    /// Shared rug pull detector (None in node, Some in RPC when ARPS is used).
+    pub rug_pull_detector: Option<Arc<RwLock<RugPullDetector>>>,
 }
 
 impl FraudDetector {
@@ -36,6 +41,18 @@ impl FraudDetector {
         Self {
             pattern_db: PatternDatabase::new(),
             config,
+            rug_pull_detector: None,
+        }
+    }
+
+    pub fn new_with_rug_pull(
+        config: FraudConfig,
+        rug_pull_detector: Arc<RwLock<RugPullDetector>>,
+    ) -> Self {
+        Self {
+            pattern_db: PatternDatabase::new(),
+            config,
+            rug_pull_detector: Some(rug_pull_detector),
         }
     }
 
@@ -76,6 +93,38 @@ impl FraudDetector {
 
         // CHECK 7: Known suspicious patterns (recipient)
         score += self.check_known_patterns(tx, &mut flags);
+
+        // CHECK 8: Rug pull detection (ARPS)
+        if let Some(ref rp) = self.rug_pull_detector {
+            let mut guard = rp.write().unwrap();
+            let contract_profile: Option<&ContractRiskProfile> = None;
+            let sender_balance = 0u128;
+            let total_supply = 0u128;
+            if let Some(alert) = guard.analyse_transaction(
+                tx,
+                contract_profile,
+                sender_balance,
+                total_supply,
+                block_number,
+            ) {
+                match alert.severity {
+                    AlertSeverity::Critical => {
+                        score += 50;
+                        flags.push(FraudFlag::PotentialRugPull);
+                    }
+                    AlertSeverity::High => {
+                        score += 30;
+                        flags.push(FraudFlag::SuspiciousLargeSell);
+                    }
+                    AlertSeverity::Medium => {
+                        score += 15;
+                    }
+                    AlertSeverity::Low => {
+                        score += 5;
+                    }
+                }
+            }
+        }
 
         let score = score.min(100);
         let recommendation = get_recommendation(score, &self.config);
