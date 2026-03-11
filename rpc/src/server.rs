@@ -16,6 +16,7 @@ use quyn_intelligence::{
     ConcentrationMonitor, ContractScanner, FraudConfig, FraudDetector, FraudRecommendation,
     RugPullConfig, RugPullDetector,
     gas_optimiser::{BlockMetrics, CongestionLevel, GasConfig, GasOptimiser},
+    AiGeneratedStatus, ContentType, CredibilityScore, ContentVerification,
 };
 use alloy_primitives::{Address, B256, U256};
 use rlp::Rlp;
@@ -782,6 +783,100 @@ async fn dispatch(state: AppState, method: &str, params: Value) -> Value {
                 }),
                 Err(e) => error_value(e.to_string()),
             }
+        }
+        "qyn_verifyContent" => {
+            // Prototype of the QYN Verify RPC: analyse a content identifier (URL or text)
+            // and return a structured verification result. Full on-chain recording can
+            // extend this schema in a later phase.
+            if let Err(e) = require_param_string(&params, 0) {
+                return e;
+            }
+            let input = param_str(&params, 0).unwrap_or("").trim();
+            let ctype_str = params
+                .get(1)
+                .and_then(|p| p.as_str())
+                .unwrap_or("unknown")
+                .to_lowercase();
+            let content_type = match ctype_str.as_str() {
+                "article" => ContentType::Article,
+                "image" => ContentType::Image,
+                "video" => ContentType::Video,
+                "document" => ContentType::Document,
+                "socialpost" | "social_post" | "post" => ContentType::SocialPost,
+                "text" => ContentType::Text,
+                _ => ContentType::Unknown,
+            };
+
+            // Derive a deterministic content hash from the input string for now.
+            let content_hash = alloy_primitives::keccak256(input.as_bytes());
+
+            // Placeholder scoring logic. This can later be replaced by a dedicated
+            // content analysis pipeline inside quyn-intelligence.
+            let len = input.len();
+            let (trust_score, ai_generated, manipulation_detected, source_credibility) = if len < 32 {
+                (50u8, AiGeneratedStatus::Unknown, false, CredibilityScore::Unknown)
+            } else if len < 280 {
+                (72u8, AiGeneratedStatus::Unknown, false, CredibilityScore::Medium)
+            } else {
+                (88u8, AiGeneratedStatus::LikelyAiGenerated, false, CredibilityScore::High)
+            };
+
+            let verified_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            let verification = ContentVerification {
+                verification_id: alloy_primitives::keccak256(
+                    [content_hash.as_slice(), verified_at.to_be_bytes().as_slice()].concat().as_slice(),
+                ),
+                content_hash,
+                content_url: if input.starts_with("http://") || input.starts_with("https://") {
+                    Some(input.to_string())
+                } else {
+                    None
+                },
+                content_type,
+                trust_score,
+                ai_generated,
+                manipulation_detected,
+                source_credibility,
+                original_source: None,
+                alteration_history: None,
+                verified_at,
+            };
+
+            serde_json::json!({
+                "verificationId": format!("0x{}", hex::encode(verification.verification_id)),
+                "contentHash": format!("0x{}", hex::encode(verification.content_hash)),
+                "contentUrl": verification.content_url,
+                "contentType": match verification.content_type {
+                    ContentType::Article => "ARTICLE",
+                    ContentType::Image => "IMAGE",
+                    ContentType::Video => "VIDEO",
+                    ContentType::Document => "DOCUMENT",
+                    ContentType::SocialPost => "SOCIAL_POST",
+                    ContentType::Text => "TEXT",
+                    ContentType::Unknown => "UNKNOWN",
+                },
+                "trustScore": verification.trust_score,
+                "aiGenerated": match verification.ai_generated {
+                    AiGeneratedStatus::Human => "HUMAN",
+                    AiGeneratedStatus::AiGenerated => "AI_GENERATED",
+                    AiGeneratedStatus::LikelyAiGenerated => "LIKELY_AI_GENERATED",
+                    AiGeneratedStatus::Unknown => "UNKNOWN",
+                },
+                "manipulationDetected": verification.manipulation_detected,
+                "sourceCredibility": match verification.source_credibility {
+                    CredibilityScore::High => "HIGH",
+                    CredibilityScore::Medium => "MEDIUM",
+                    CredibilityScore::Low => "LOW",
+                    CredibilityScore::Unknown => "UNKNOWN",
+                },
+                "originalSource": verification.original_source,
+                "alterationHistory": verification.alteration_history,
+                "verifiedAt": verification.verified_at,
+            })
         }
         "qyn_getValidatorScores" => {
             // Phase 2 placeholder: empty result until AI selector is wired.

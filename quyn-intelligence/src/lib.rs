@@ -16,6 +16,7 @@ pub mod rug_pull_detector;
 pub mod gas_optimiser;
 pub mod validator_scorer;
 pub mod validator_selection;
+pub mod content_verifier;
 
 pub use fraud_detector::FraudDetector;
 pub use models::FraudConfig;
@@ -39,4 +40,10 @@ pub use liquidity_monitor::LiquidityMonitor;
 pub use validator_scorer::ValidatorScorer;
 pub use validator_selection::{
     AIValidatorSelector, SelectorConfig, ValidatorCandidate, ValidatorScore,
+};
+pub use content_verifier::{
+    AiGeneratedStatus,
+    ContentType,
+    CredibilityScore,
+    ContentVerification,
 };
